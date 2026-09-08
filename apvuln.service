@@ -1,0 +1,10 @@
+[Unit]
+Description=apvulnd - slow-time AP vulnerability research (recon only, spare CPU)
+
+[Service]
+Type=oneshot
+# spare-resources only: lowest CPU niceness + idle IO class
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+ExecStart=/usr/bin/python3 /opt/apvuln/apvulnd.py

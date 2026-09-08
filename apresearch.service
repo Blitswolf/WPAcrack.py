@@ -1,0 +1,16 @@
+[Unit]
+Description=apresearch - continuous low-priority AP exploit-intelligence model (uses spare CPU)
+After=network.target
+
+[Service]
+Type=simple
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+ExecStartPre=/usr/bin/python3 /opt/apvuln/apresearch.py build
+ExecStart=/usr/bin/python3 /opt/apvuln/apresearch.py serve
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

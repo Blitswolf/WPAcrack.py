@@ -203,6 +203,55 @@ the GPU run without waiting on the generator.
    capture appliance          smart generation + fast cracking
 ```
 
+## The continuous stack (distributed, two-Pi)
+
+Beyond the one-shot capture, the tools compose into a standing pipeline across two machines:
+
+```
+        kali-pie  (capture + research)                    home-pie  (crack)
+ ┌──────────────────────────────────────────┐      ┌───────────────────────────────┐
+ │ wpacrack --harvest   (systemd service)     │      │ pull handshakes from library  │
+ │   monitor mode set ONCE, loops the         │ scp  │ markovgen(model) │ hashcat     │
+ │   authorized targets, archives handshakes  │─────▶│ (smart ordered candidates)    │
+ │   -> /opt/wpacrack/library/<bssid>/*.22000 │      └───────────────────────────────┘
+ │                                            │
+ │ apresearch  (continuous, Nice=19)          │   exploit-intelligence MODEL: when
+ │   builds a TF-IDF index over the local     │   searchsploit finds nothing, it infers
+ │   exploit-db, infers nearest analogues +   │   the likely vuln classes and mines a
+ │   vuln-class predictions + a mined test    │   concrete test plan from neighbours'
+ │   plan from the AP fingerprint             │   exploit code — uses the idle cores.
+ │ apvulnd    (hourly timer, Nice=19)         │
+ │   fingerprints the AP from harvested       │
+ │   beacons (WPS/RSN/PMF/cipher/vendor),     │
+ │   searchsploit, and — when the AP is       │
+ │   reachable — a bounded, non-destructive   │
+ │   discovery sweep. Recon only, no lockout. │
+ └──────────────────────────────────────────┘
+```
+
+### `wpacrack --harvest`
+Continuous capture into a library on the capture box's disk. Sets monitor mode **once** (no
+per-cycle NetworkManager churn), loops the authorized `targets`, archives each handshake under
+`library/<bssid>/<ts>.{cap,22000}`, and idles once every target has a handshake newer than
+`refresh_ttl`. Config keys: `library`, `cooldown`, `refresh_ttl`. Runs as `wpacrack-harvest.service`.
+
+### `apvulnd` — AP vuln research (recon, not attack)
+A low-priority timer that fingerprints the AP from the harvested beacons (vendor/OUI, WPS presence +
+lock state + model, RSN AKM = WPA2 vs WPA3/SAE, pairwise cipher, PMF), derives a posture with
+findings, runs `searchsploit`, and — only when the AP's management IP (`ap_mgmt_ip`) is reachable —
+runs a **bounded, non-destructive** discovery sweep (service/version + light rate-limited web
+enumeration). It never brute-forces WPS PINs or logins, so it can't trip a lockout.
+
+### `apresearch` — exploit-intelligence model
+The vuln-side counterpart to markovgen: a TF-IDF (word + char-4-gram) similarity model over the
+local exploit-db (~47k entries). Given the AP fingerprint it returns the **nearest analogues**
+(fuzzy — catches what an exact `searchsploit` grep misses), **predicts vulnerability classes**, and
+deep-mines the top neighbours' exploit source for concrete **endpoints / parameters / payloads** to
+test — a self-generated research plan for when exact exploit data doesn't exist. Runs continuously at
+`Nice=19` / idle IO so a capture box's spare cores are actually put to work. Modes: `build`,
+`predict TERMS...`, `serve`. Pure stdlib, so it **relocates** to a bigger box (e.g. the crack Pi) and
+scales up (larger corpus, full-text index) unchanged.
+
 ## Notes / limitations
 
 - If no handshake appears within the capture budget, it exits cleanly and tells you to retry when

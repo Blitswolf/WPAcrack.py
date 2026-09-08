@@ -1,0 +1,15 @@
+[Unit]
+Description=wpacrack harvest - continuous WPA2 handshake capture into a library (authorized targets)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/wpacrack/wpacrack.py --harvest
+Restart=on-failure
+RestartSec=30
+# SIGTERM triggers wpacrack's cleanup (restore managed mode + NetworkManager + netwatch)
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -10,3 +10,8 @@ targets     = AA:BB:CC:DD:EE:FF:1, AA:BB:CC:DD:EE:F0:36
 # OPTIONAL: seed words -> emitted as candidates.txt to copy to your GPU cracking box.
 # Not used for cracking on the Pi (the Pi only captures). Leave blank to skip.
 custom_seeds =
+
+# --- harvest mode (wpacrack.py --harvest): continuous capture into a library ---
+library      = /opt/wpacrack/library
+cooldown     = 1800      # seconds to idle between capture cycles
+refresh_ttl  = 86400     # skip a BSSID that already has a handshake newer than this (seconds)

