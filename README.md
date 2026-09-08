@@ -155,7 +155,42 @@ Pipe it straight into hashcat's stdin mode:
 ```
 
 Key flags: `--order` (context length), `--count` (max candidates), `--minlen/--maxlen`,
-`--beam` (frontier bound; `0` = exact best-first), `--seed` (repeatable), `--train-limit`.
+`--beam` (frontier bound; `0` = exact best-first), `--alpha` (back-off penalty), `--seed`
+(repeatable), `--train-limit`, `--save-model`/`--model`.
+
+### Model quality: back-off + train once, reuse
+
+- **Katz-style back-off.** A high-order context that was never seen in training falls back to the
+  longest shorter context that was, instead of dead-ending. This is what makes `--order 4`/`5`
+  usable rather than sparse.
+- **Train once, reuse.** Training is the slow part; do it once and cache the model:
+  ```bash
+  ./markovgen.py --train corpus.txt --order 3 --save-model corpus.mdl
+  ./markovgen.py --model corpus.mdl --count 5000000 | hashcat -m 22000 wpa.22000
+  ```
+
+### Better training data than rockyou
+
+rockyou (2009, ~14M, English-skewed) is a fine start but limited. A richer, more current, more
+multilingual model comes from concatenating several corpora before training — e.g. rockyou +
+SecLists `Pwdb_top-10000000`, `xato-net-10-million-passwords`, `md5decryptor-uk`, `openwall.net-all`.
+More data = better character statistics = better-ordered guesses. (Don't bother de-duplicating for a
+Markov model — repeated passwords rightly raise their own probability.)
+
+### Making the most of the hardware
+
+The model/generation runs on CPU; hashcat runs on the GPU. To keep a fast GPU saturated, don't rely
+on the Python generator's throughput as the bottleneck — **pre-generate a candidate file, then let
+hashcat rip through it** with an optimized, max-workload profile:
+
+```bash
+./markovgen.py --model corpus.mdl --count 50000000 -o cands.txt   # CPU, one-time
+hashcat -m 22000 -w 4 -O wpa.22000 cands.txt                      # GPU flat-out (-w4 max, -O optimized)
+```
+
+`-w 4` is the maximum workload profile; `-O` uses optimized kernels (much faster, caps candidate
+length — fine for WPA). Piping straight into hashcat still works and is simplest, but a file lets
+the GPU run without waiting on the generator.
 
 ### The pipeline
 

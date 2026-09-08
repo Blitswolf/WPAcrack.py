@@ -11,3 +11,7 @@ RESULT.txt
 *.log
 __pycache__/
 *.pyc
+# trained models + built corpora (large, derived; rebuild locally)
+*.mdl
+models/
+corpus_*.txt
