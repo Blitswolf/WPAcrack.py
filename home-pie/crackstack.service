@@ -1,0 +1,6 @@
+[Unit]
+Description=home-pie crackstack - pull handshakes from kali-pie and crack them
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/opt/crackstack/crackstack.sh

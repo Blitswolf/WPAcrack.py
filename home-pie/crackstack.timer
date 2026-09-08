@@ -1,0 +1,8 @@
+[Unit]
+Description=Run home-pie crackstack periodically
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+[Install]
+WantedBy=timers.target
