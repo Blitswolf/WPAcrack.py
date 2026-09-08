@@ -4,10 +4,9 @@
 
 iface       = wlan1
 essid       = YOUR_LAB_SSID
-nm_profile  = YOUR_LAB_SSID
-# BSSID:CHANNEL pairs, comma-separated (put the 2.4GHz BSS first = preferred)
+# BSSID:CHANNEL pairs, comma-separated (put the 2.4GHz BSS first = preferred).
+# A dual-band AP usually has two BSSIDs differing only in the last hex digit - list both.
 targets     = AA:BB:CC:DD:EE:FF:1, AA:BB:CC:DD:EE:F0:36
-lab_net     = 192.168.0.
-lab_gw      = 192.168.0.1
-# optional: offline PSK-guess seed words (case variants + common suffixes auto-generated)
-custom_seeds = SeedWord1, SeedWord2
+# OPTIONAL: seed words -> emitted as candidates.txt to copy to your GPU cracking box.
+# Not used for cracking on the Pi (the Pi only captures). Leave blank to skip.
+custom_seeds =

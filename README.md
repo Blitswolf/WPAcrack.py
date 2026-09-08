@@ -1,41 +1,57 @@
 # wpacrack
 
-Autonomous, lockout-safe WPA2 handshake capture + **offline** crack for a **single, authorized** access point.
+Autonomous, lockout-safe WPA2 handshake **capture appliance** for a single **authorized** access
+point. Built to run headless on a Raspberry Pi (Kali) as a systemd service: kick it off, drop the
+SSH session, and come back to a status/result beacon.
 
-Built to run headless on a Raspberry Pi (Kali) as a systemd service: kick it off, drop the SSH
-session, and come back later to a status/result beacon — the same pattern as a long-running
-recon job. On success it recovers the PSK and reconnects the capture interface to the target LAN
-so follow-up work can pick up immediately.
+It captures and validates a 4-way handshake and hands you a **hashcat-ready** file — it does **not**
+crack the key itself. See "Why capture-only" below.
 
-> ⚠️ **Authorized use only.** This tool deauthenticates clients of, and cracks the PSK for, the
-> one AP you name in `wpacrack.conf`. Run it **only** against a network you own or are explicitly
-> authorized to test. It refuses to start without a configured target BSSID, specifically so it
-> can never wander onto a neighbouring network.
+> ⚠️ **Authorized use only.** This tool deauthenticates clients of, and captures the handshake for,
+> the one AP you name in `wpacrack.conf`. Run it **only** against a network you own or are explicitly
+> authorized to test. It refuses to start without a configured target BSSID, specifically so it can
+> never wander onto a neighbouring network.
 
 ---
 
+## Why capture-only (the Pi doesn't crack)
+
+WPA2 keys are derived with PBKDF2-HMAC-SHA1 at 4096 iterations — a deliberately slow hash. A
+Raspberry Pi CPU manages only a few thousand guesses/second, so a rockyou run can take **hours**,
+and rules/large lists are simply impractical. The same handshake on a modest laptop GPU
+(`hashcat -m 22000`) runs **orders of magnitude faster** — rockyou finishes in *seconds*.
+
+So wpacrack splits the work along the right seam:
+
+- **The Pi does what it's good at:** reliably *capturing and validating* a handshake, patiently,
+  headless, over hours if needed — then converting it to hashcat's `22000` format.
+- **A GPU box does the cracking:** you copy the `.22000` file off and run hashcat there.
+
 ## Why "lockout-safe"
 
-The whole point is to recover the key **without ever tripping an authentication lockout or a
-WIDS ban**, so the engagement completes cleanly on the first pass:
+The point is to obtain the handshake **without tripping an authentication lockout or a WIDS ban**:
 
-- **Offline crack, never online guessing.** wpacrack captures a single WPA2 4-way handshake and
-  cracks it *offline* against wordlists. It never repeatedly presents guessed PSKs to the live AP,
-  so there is no failed-auth lockout to trip.
+- **No online guessing, ever.** wpacrack only *captures* a handshake; the PSK is cracked offline
+  on another machine. It never presents guessed keys to the live AP, so there is no failed-auth
+  lockout to trip.
 - **Gentle, capped, targeted deauth.** It listens passively first (a naturally rejoining client
-  can hand over the handshake with zero deauth). If it must nudge, it sends **small, jittered,
-  client-targeted** deauth bursts — not a broadcast flood — under a **hard global cap**
-  (`DEAUTH_TOTAL_CAP`, default 120 frames for the entire run). Past the cap it goes passive-only.
-- **One clean join.** The only association it makes is a single connect with the **already-cracked
-  (correct) key**, with backoff between retries to ride out a flaky adapter — never a
-  wrong-credential hammer.
+  can hand over the handshake with **zero** deauth). If it must nudge, it sends a single minimal,
+  **client-targeted** round (never a broadcast flood), spaced with jitter, under a **hard cap**
+  on total rounds (`DEAUTH_ROUND_CAP`), after which it goes passive-only.
+  - *Honest note on frame counts:* `aireplay-ng --deauth N` sends N **rounds of 64 frames**, not N
+    frames. wpacrack therefore counts *rounds* (default 1 round/burst) and reports an estimated
+    frame total in its status, so "gentle" means gentle in reality — not just on paper.
 
 ## How it works
 
 ```
-monitor mode ─▶ capture 4-way handshake ─▶ offline crack ─▶ set PSK + reconnect to LAN
-   (wlan1)      (passive-first, then         (escalating       (single clean join,
-                 gentle capped deauth)         wordlists)         backoff retries)
+monitor mode ─▶ capture 4-way handshake ─▶ convert to hashcat 22000 ─▶ restore box
+   (wlan1)      (passive-first, then          (hcxpcapngtool, if           (managed mode,
+                 gentle capped deauth)          present) + deliver           NM up, netwatch on)
+                                                to home dirs
+                                                        │
+                                                        ▼
+                                        crack OFF-BOX:  hashcat -m 22000
 ```
 
 1. Pauses `netwatch` (interface self-heal), stops NetworkManager/wpa_supplicant, puts the
@@ -43,20 +59,20 @@ monitor mode ─▶ capture 4-way handshake ─▶ offline crack ─▶ set PSK 
 2. Rotates across the configured BSSIDs/channels (e.g. the 2.4 GHz and 5 GHz BSS of one AP),
    listening for and (gently) eliciting a 4-way handshake, validated with `tshark` (EAPOL frames
    both to and from the AP for a common station).
-3. Cracks the captured handshake with `aircrack-ng` across an escalating wordlist set (a small
-   high-probability custom list from your seeds first, then rockyou / SecLists).
-4. On success: restores managed mode, writes the recovered PSK into the NetworkManager profile,
-   connects the interface to the target LAN, and re-enables `netwatch`.
-5. Beacons progress the whole time and writes a final result file. On stop/finish it always
-   restores the box to a clean managed state.
+3. On capture: converts to `wpa.22000` with `hcxpcapngtool` (if installed) and copies the
+   handshake + hash to the home dirs for an easy pull. **No cracking.**
+4. Restores managed mode, brings NetworkManager back, re-enables `netwatch`.
+5. Writes a final result file with the exact off-box crack commands. Beacons progress throughout.
 
 ## Requirements
 
-- Kali (or similar) with the `aircrack-ng` suite (`airodump-ng`, `aireplay-ng`, `aircrack-ng`),
-  `iw`, `tshark`, and NetworkManager (`nmcli`).
+- Kali (or similar) with the `aircrack-ng` suite (`airodump-ng`, `aireplay-ng`), `iw`, `tshark`,
+  and NetworkManager (`nmcli`).
+- **`hcxtools`** (`hcxpcapngtool`) — *optional*; if absent, the `.cap` is still delivered and you
+  convert it on the cracking box.
 - A monitor-mode-capable adapter (developed against a Realtek RTL8812AU).
-- Python 3. Standard library only — no pip dependencies.
-- Root (systemd runs it as root).
+- Python 3, standard library only — no pip dependencies.
+- **No hashcat/GPU on the Pi** — cracking happens elsewhere.
 
 ## Install
 
@@ -73,45 +89,46 @@ Edit `/opt/wpacrack/wpacrack.conf` to point at your authorized AP (see `wpacrack
 ## Usage
 
 ```bash
-sudo wpacrack-start     # begin the engagement (safe to disconnect afterwards)
+sudo wpacrack-start     # begin capture (safe to disconnect afterwards)
 sudo wpacrack-status    # phase, elapsed, deauth budget used, and final RESULT when done
 sudo wpacrack-stop      # stop early; the box is restored to managed mode either way
 ```
 
-Because it runs under systemd, you can close your SSH session and check back later with
-`wpacrack-status`.
+When it finishes, `RESULT.txt` (and `~/wpacrack_RESULT.txt`) contains the handshake path and the
+exact commands to crack it off-box. Then, on your GPU machine:
+
+```bash
+scp <pi>:/opt/wpacrack/wpa.22000 .
+hashcat -m 22000 -a 0 wpa.22000 /path/to/rockyou.txt
+# escalate if needed: add rules (-r rules/best64.rule) or a larger list
+```
 
 ## Configuration (`wpacrack.conf`)
 
 | key            | meaning                                                            |
 |----------------|--------------------------------------------------------------------|
 | `iface`        | monitor/managed interface (e.g. `wlan1`)                           |
-| `essid`        | target SSID                                                        |
-| `nm_profile`   | NetworkManager connection name to update + bring up on success     |
+| `essid`        | target SSID (label only)                                           |
 | `targets`      | `BSSID:CHANNEL` pairs, comma-separated (2.4 GHz first = preferred) |
-| `lab_net`      | expected client subnet prefix once associated (e.g. `192.168.0.`)  |
-| `lab_gw`       | LAN gateway (informational / next-step hint)                       |
-| `custom_seeds` | optional PSK-guess seed words; case variants + suffixes auto-built |
+| `custom_seeds` | *optional* seed words; emitted as `candidates.txt` to copy to the cracking box (not used here) |
 
-Tuning constants (capture budget, dwell, and the deauth caps described above) live at the top of
-`wpacrack.py`.
+Capture/deauth tuning constants live at the top of `wpacrack.py`.
 
-## Output
-
-Under `/opt/wpacrack/`:
+## Output (`/opt/wpacrack/`)
 
 - `STATUS.txt` — live phase / elapsed / deauth-budget beacon
-- `RESULT.txt` — final outcome (also copied to `~/wpacrack_RESULT.txt` for easy SSH viewing)
+- `RESULT.txt` — final outcome + off-box crack commands (also `~/wpacrack_RESULT.txt`)
+- `handshake.cap` — the captured handshake (also copied to the home dirs)
+- `wpa.22000` — hashcat-ready hash (if `hcxpcapngtool` was available)
+- `candidates.txt` — optional targeted candidate list from your seeds
 - `wpacrack.log` — timestamped log
-- `handshake.cap` — the captured handshake (kept for offline re-cracking, e.g. `hashcat -m 22000`)
 
-`wpacrack.conf` and every runtime artifact are `.gitignore`d, so no site identifiers, captures,
-or recovered keys are ever committed.
+`wpacrack.conf` and every runtime artifact are `.gitignore`d, so no site identifiers or captures
+are ever committed.
 
 ## Notes / limitations
 
 - If no handshake appears within the capture budget, it exits cleanly and tells you to retry when
   a client is powered on and associated (a handshake requires a client to (re)join).
-- If the handshake is captured but the PSK isn't in the wordlists, the `.cap` is preserved for
-  offline cracking with a bigger list or GPU (`hashcat`).
 - Adapter stability matters: the capture step needs reliable monitor mode + injection.
+- Cracking is out of scope by design — bring your own GPU box and wordlists.

