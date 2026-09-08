@@ -380,7 +380,12 @@ def have_recent(bssid, ttl):
 
 def archive(bssid):
     """Copy the freshly captured handshake into the library under <BSSID>/<timestamp>.{cap,22000}
-    and append to the library index. Conversion to 22000 is best-effort (hcxpcapngtool)."""
+    and append to the library index. Conversion to 22000 is best-effort (hcxpcapngtool).
+    Scope guard: refuse to store anything whose BSSID is not one of the authorized targets, so the
+    library can only ever hold the configured AP - not just by construction, but enforced here."""
+    if bssid.upper() not in {b.upper() for b, _ in TARGETS}:
+        log(f"archive REFUSED: {bssid} is not an authorized target - not stored")
+        return None
     d = os.path.join(LIBRARY, bssid.replace(":", ""))
     os.makedirs(d, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
