@@ -1,0 +1,16 @@
+[Unit]
+Description=wpacrack - autonomous WPA2 handshake capture + offline crack for the lab AP
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/wpacrack/wpacrack.py
+# Do NOT auto-restart: this is a one-shot engagement, not a daemon. Rerun with wpacrack-start.
+Restart=no
+# On stop, wpacrack's SIGTERM handler restores managed mode + NetworkManager cleanly.
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

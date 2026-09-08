@@ -1,0 +1,6 @@
+#!/bin/bash
+# Start (or restart) the wpacrack engagement and follow status.
+set -e
+systemctl reset-failed wpacrack.service 2>/dev/null || true
+systemctl start wpacrack.service
+echo "wpacrack started. Follow with: sudo wpacrack-status   (Ctrl-C just stops watching)"

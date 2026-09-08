@@ -1,0 +1,13 @@
+# site-specific config (holds real SSID/BSSID/seeds)
+wpacrack.conf
+# runtime artifacts
+caps/
+*.cap
+*.csv
+*.netxml
+custom.txt
+STATUS.txt
+RESULT.txt
+*.log
+__pycache__/
+*.pyc

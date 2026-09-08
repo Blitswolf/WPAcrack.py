@@ -1,0 +1,4 @@
+#!/bin/bash
+# Stop the engagement; wpacrack restores managed mode + NetworkManager on the way out.
+systemctl stop wpacrack.service
+echo "wpacrack stopped; box restored to managed mode. See /opt/wpacrack/RESULT.txt"

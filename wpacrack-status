@@ -1,0 +1,5 @@
+#!/bin/bash
+echo "=== service ==="; systemctl is-active wpacrack.service 2>/dev/null; systemctl --no-pager -n 3 status wpacrack.service 2>/dev/null | tail -3
+echo; echo "=== STATUS.txt ==="; cat /opt/wpacrack/STATUS.txt 2>/dev/null || echo "(none yet)"
+echo; echo "=== RESULT.txt ==="; cat /opt/wpacrack/RESULT.txt 2>/dev/null || echo "(not finished)"
+echo; echo "=== last 12 log lines ==="; tail -12 /opt/wpacrack/wpacrack.log 2>/dev/null || echo "(no log)"

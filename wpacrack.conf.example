@@ -1,0 +1,13 @@
+# wpacrack site config - copy to wpacrack.conf and fill in YOUR OWN authorized AP.
+# The real wpacrack.conf is gitignored so your AP identifiers never reach the repo.
+# wpacrack refuses to run without a valid 'targets' line (so it can never deauth a stray BSSID).
+
+iface       = wlan1
+essid       = YOUR_LAB_SSID
+nm_profile  = YOUR_LAB_SSID
+# BSSID:CHANNEL pairs, comma-separated (put the 2.4GHz BSS first = preferred)
+targets     = AA:BB:CC:DD:EE:FF:1, AA:BB:CC:DD:EE:F0:36
+lab_net     = 192.168.0.
+lab_gw      = 192.168.0.1
+# optional: offline PSK-guess seed words (case variants + common suffixes auto-generated)
+custom_seeds = SeedWord1, SeedWord2
