@@ -126,6 +126,48 @@ Capture/deauth tuning constants live at the top of `wpacrack.py`.
 `wpacrack.conf` and every runtime artifact are `.gitignore`d, so no site identifiers or captures
 are ever committed.
 
+## Companion: `markovgen` — smarter-than-a-wordlist candidate generation
+
+`markovgen.py` is a standalone candidate generator for the crack step. A static leak list like
+rockyou can only ever produce passwords that were *already breached* — if the target's password
+was never leaked, rockyou can't find it (exactly what happened in testing here). `markovgen`
+instead **learns the character-level structure** of human passwords by training an order-k Markov
+model on a corpus, then **generates candidates — including novel ones — in descending probability
+order**.
+
+The applied-CS core is the ordered enumeration: it's a **best-first (uniform-cost) search** over
+the weighted trie of prefixes. Each partial string is a search node whose cost is the summed
+negative log-probability of its characters; expanding the lowest-cost node and emitting completed
+words yields candidates in (near-)optimal probability order. An optional `--beam` bounds the
+frontier, turning exact best-first into memory-bounded beam search.
+
+Why it beats a raw wordlist for WPA:
+- **generalises** beyond the training leak (emits plausible unseen strings)
+- **most-probable-first**, so early guesses carry the most weight
+- **respects WPA's 8-char minimum** (rockyou wastes ~a third of its lines on <8)
+- **seedable** with target words (name/SSID/org), which are tried first
+
+Pipe it straight into hashcat's stdin mode:
+
+```bash
+./markovgen.py --train /usr/share/wordlists/rockyou.txt --order 3 --count 5000000 \
+    --seed Robinson --seed Entropy | hashcat -m 22000 wpa.22000
+```
+
+Key flags: `--order` (context length), `--count` (max candidates), `--minlen/--maxlen`,
+`--beam` (frontier bound; `0` = exact best-first), `--seed` (repeatable), `--train-limit`.
+
+### The pipeline
+
+```
+   Pi (wpacrack)                 GPU box
+ ┌───────────────┐   scp    ┌──────────────────────────────────┐
+ │ capture 4-way │ ──────▶  │ markovgen ──stream──▶ hashcat -m  │
+ │ → wpa.22000   │  .22000  │ (ordered guesses)      22000      │
+ └───────────────┘          └──────────────────────────────────┘
+   capture appliance          smart generation + fast cracking
+```
+
 ## Notes / limitations
 
 - If no handshake appears within the capture budget, it exits cleanly and tells you to retry when
