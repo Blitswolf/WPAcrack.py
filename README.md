@@ -151,7 +151,7 @@ Pipe it straight into hashcat's stdin mode:
 
 ```bash
 ./markovgen.py --train /usr/share/wordlists/rockyou.txt --order 3 --count 5000000 \
-    --seed Robinson --seed Entropy | hashcat -m 22000 wpa.22000
+    --seed Smith --seed Acme | hashcat -m 22000 wpa.22000
 ```
 
 Key flags: `--order` (context length), `--count` (max candidates), `--minlen/--maxlen`,

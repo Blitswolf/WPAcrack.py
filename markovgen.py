@@ -22,7 +22,7 @@ Practical wins over a raw wordlist for WPA cracking:
   * can be seeded with target-specific words (name, SSID, org) that get tried first
 
 Pipe straight into hashcat (stdin mode):
-    ./markovgen.py --train rockyou.txt --count 5000000 --seed Robinson --seed Entropy \
+    ./markovgen.py --train rockyou.txt --count 5000000 --seed Smith --seed Acme \
         | hashcat -m 22000 wpa.22000
 
 No third-party dependencies; pure standard library.
@@ -143,7 +143,7 @@ def main():
                     help="drop transitions seen fewer than this many times (noise floor; default 2)")
     ap.add_argument("--train-limit", type=int, default=0, help="train on only the first N lines (0 = all)")
     ap.add_argument("--seed", action="append", default=[],
-                    help="target-specific word to try first (repeatable), e.g. --seed Robinson")
+                    help="target-specific word to try first (repeatable), e.g. --seed Smith")
     ap.add_argument("-o", "--out", default="-", help="output file ('-' = stdout, for piping to hashcat)")
     args = ap.parse_args()
 
