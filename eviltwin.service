@@ -1,0 +1,15 @@
+[Unit]
+Description=eviltwin - scope-locked, opt-in, time-bounded WPA2-PSK evil-twin credential capture (one session per start)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/wpacrack/eviltwin.py
+Restart=no
+KillSignal=SIGTERM
+TimeoutStopSec=45
+# a session is self-bounded by eviltwin_ttl; give it headroom then hard-stop
+TimeoutStartSec=2400
+
+# NOTE: intentionally NOT [Install]/enabled — this broadcasts a spoofed SSID + deceives a human,
+# so it only ever runs when explicitly armed + started (sudo eviltwin-run), never on boot.

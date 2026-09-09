@@ -1,0 +1,5 @@
+#!/bin/bash
+CONF=/opt/wpacrack/wpacrack.conf
+sed -i -E 's/^\s*eviltwin_enabled\s*=.*/eviltwin_enabled = false/I' "$CONF" 2>/dev/null || printf '\neviltwin_enabled = false\n' >> "$CONF"
+systemctl stop eviltwin.service 2>/dev/null
+echo "EVIL-TWIN DISARMED + any running session stopped:"; grep -iE '^\s*eviltwin_enabled\s*=' "$CONF"

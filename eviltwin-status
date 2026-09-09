@@ -1,0 +1,6 @@
+#!/bin/bash
+echo "=== service ==="; systemctl is-active eviltwin.service 2>/dev/null; systemctl --no-pager -n 3 status eviltwin.service 2>/dev/null | tail -3
+echo; echo "=== armed? ==="; grep -qiE '^\s*eviltwin_enabled\s*=\s*(true|yes|on|1)' /opt/wpacrack/wpacrack.conf 2>/dev/null && echo "ARMED (eviltwin_enabled=true)" || echo "DISARMED (no AP will broadcast)"
+echo; echo "=== ET_STATUS.txt ==="; cat /opt/wpacrack/ET_STATUS.txt 2>/dev/null || echo "(none yet)"
+echo; echo "=== loot ==="; find /opt/wpacrack/loot -name 'eviltwin-*.loot' 2>/dev/null | sed 's,^,  ,'; [ -s /root/eviltwin_loot.txt ] && echo "  (see /root/eviltwin_loot.txt)"
+echo; echo "=== last 14 log lines ==="; tail -14 /opt/wpacrack/eviltwin.log 2>/dev/null || echo "(no log)"

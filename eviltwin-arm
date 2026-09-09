@@ -1,0 +1,9 @@
+#!/bin/bash
+CONF=/opt/wpacrack/wpacrack.conf
+if grep -qiE '^\s*eviltwin_enabled\s*=' "$CONF"; then
+  sed -i -E 's/^\s*eviltwin_enabled\s*=.*/eviltwin_enabled = true/I' "$CONF"
+else
+  printf '\neviltwin_enabled = true\n' >> "$CONF"
+fi
+echo "EVIL-TWIN ARMED (one bounded session will run on start):"; grep -iE '^\s*eviltwin_enabled\s*=' "$CONF"
+echo "run it now with: sudo eviltwin-run"

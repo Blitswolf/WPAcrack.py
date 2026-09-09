@@ -1,0 +1,3 @@
+#!/bin/bash
+# which adapters on this Pi can actually be the evil-twin AP (AP-mode TX health)?
+python3 /opt/wpacrack/eviltwin.py --radiocheck "$@"

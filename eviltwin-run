@@ -1,0 +1,5 @@
+#!/bin/bash
+# fire ONE bounded evil-twin session now (must be armed first). Auto-disarms on success.
+grep -qiE '^\s*eviltwin_enabled\s*=\s*(true|yes|on|1)' /opt/wpacrack/wpacrack.conf || { echo "not armed — run: sudo eviltwin-arm"; exit 1; }
+systemctl start eviltwin.service && sleep 2 && journalctl -u eviltwin.service -n 20 --no-pager
+echo "-- follow live with: journalctl -u eviltwin.service -f  |  status: sudo eviltwin-status"

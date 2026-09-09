@@ -300,3 +300,31 @@ log -> `wps.log`.
 
 **Helpers:** `wps-status`, `wps-run` (force an immediate sweep), `wps-arm`,
 `wps-disarm`.
+
+---
+
+## Evil-twin module (`eviltwin.py`) — opt-in, time-bounded PSK credential capture
+
+The recovery path when a PSK beats offline cracking **and** WPS. Instead of attacking the hash it
+targets the human: stands up an **open AP impersonating the authorized ESSID**, a captive portal
+asks the user to "re-enter the Wi-Fi password", and **every submission is validated against a real
+4-way handshake we already captured** (`aircrack-ng`). Only the correct PSK is accepted — no
+guessing, no false loot.
+
+**Gated harder than WPS (it deceives a person):** hard scope-lock to the one authorized ESSID/BSSID;
+opt-in `eviltwin_enabled`; **start-on-demand only, never enabled at boot**; a single **time-bounded**
+session per start (TTL then full teardown); auto-disarm + loot on success; always tears the AP down
+on exit/signal. Refuses to run if no captured handshake exists to validate against.
+
+**Broken-chipset handling (radio auto-selection):** an evil twin needs a radio that can *sustain
+AP-mode TX*. Some chipsets (e.g. **mt76x0u / Alfa AWUS036ACHM**) bring the AP up but then fail to
+transmit beacons/probe-responses (`Failed to set beacon parameters`), so clients never join. The
+module **health-probes each radio** (`eviltwin-radiocheck`), skips the Pi's built-in wifi and the
+harvest radio, and if no dedicated radio passes it **falls back to borrowing the reliable harvest
+radio** (RTL8812AU) via the shared `.radio.lock` (time-sliced, monitor restored after) — optionally
+pre-herding clients on that radio before flipping it to the twin.
+
+**Coexists with the harvest** the same way the WPS module does (shared radio lock, monitor restored).
+
+**Helpers:** `eviltwin-radiocheck` (which adapters can be the AP), `eviltwin-arm` / `eviltwin-disarm`,
+`eviltwin-run` (one bounded session now), `eviltwin-status`. Loot -> `/opt/wpacrack/loot/<BSSID>/eviltwin-<ts>.loot`.

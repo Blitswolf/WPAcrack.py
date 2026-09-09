@@ -19,3 +19,6 @@ loot/
 wps_state/
 WPS_STATUS.txt
 wps_loot.txt
+ET_STATUS.txt
+eviltwin.log
+eviltwin_loot.txt

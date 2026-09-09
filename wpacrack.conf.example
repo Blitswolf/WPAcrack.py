@@ -26,3 +26,16 @@ wps_online_max_seconds = 900         # hard cap on the whole online attempt
 wps_retry_cooldown     = 21600       # 6h : skip a target that yielded nothing
 wps_lock_cooldown      = 86400       # 24h : long back-off after any lock/rate-limit signal
 wps_cycle_idle         = 1800      # daemon: seconds to idle between full target sweeps
+
+# --- evil-twin module (eviltwin.py) : opt-in, time-bounded PSK credential capture ---
+# HARD opt-in gate: no AP broadcasts until true. Higher-consequence than WPS (it deceives a human),
+# so it is start-on-demand only (never enabled at boot). Use `sudo eviltwin-arm` then `sudo eviltwin-run`.
+eviltwin_enabled     = false
+# dedicated AP radio. If its chipset can't sustain AP-mode TX (e.g. the mt76x0u/AWUS036ACHM), the
+# module auto-detects that and falls back to borrowing the harvest radio (wlan1) time-sliced.
+eviltwin_iface       = wlan2
+# optional monitor radio for client herding (needs reliable TX; empty = passive/pre-herd only)
+eviltwin_deauth_iface =
+eviltwin_deauth      = false     # herd clients off the real AP (bounded, jittered / pre-herd burst)
+eviltwin_ttl         = 1200      # hard cap on one session (seconds), then full teardown
+eviltwin_portal_ip   = 10.0.0.1
