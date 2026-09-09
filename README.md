@@ -261,38 +261,42 @@ scales up (larger corpus, full-text index) unchanged.
 
 ---
 
-## WPS attack module (`wps_attack.py`) — lockout-safe, opt-in
+## WPS attack module (`wps_attack.py`) — lockout-safe, opt-in, **continual service**
 
 A third leg of the kali-pie stack that recovers a WPA key via **WPS** when the
-handshake won't crack. It shares the single `wlan1` radio with the WPA harvest
-through a file lock, so the two never transmit at once and neither knocks the
-other off the air.
+handshake won't crack. It runs as a **continual systemd service** that shares the
+single `wlan1` radio with the WPA harvest through a file lock, so the two never
+transmit at once and neither knocks the other off the air.
 
 **Sequence (authorized targets only):**
 1. **Recon** — `wash` on the target channel; proceed **only** if WPS is present
    **and not locked**. Otherwise report and stop — never attack blind.
 2. **Pixie-dust** — offline-ish `reaver -K`, then `bully -d` as an alternate.
-   Cheapest, lowest-noise shot. Success → loot, done.
+   Cheapest, lowest-noise shot. Success -> loot, done.
 3. **Online PIN** — conservative `reaver` (`-d 15 -r 3:60 --lock-delay 300`)
    **only** if pixie failed, and it **aborts the instant** the AP signals a
    lock / rate-limit. Losing a run is fine; locking the AP is not.
 
 **Never drives an AP into lockout:** lock/rate-limit detection with immediate
 back-off, `-r`/`-d` throttling, no `--ignore-locks`, and a per-target cooldown
-(6 h after a no-result, 24 h after any lock signal) so the timer can't grind a
-target toward a blacklist.
+(6 h after a no-result, 24 h after any lock signal) so the continual loop can
+never grind a target toward a blacklist — "continual" never means "hammering".
 
 **Radio coexistence with the harvest:** both stay in **monitor** mode (no
 managed/monitor churn). A shared flock at `/opt/wpacrack/.radio.lock` serialises
-*who transmits*: the harvest holds it during a capture burst and releases it for
-the long cooldown, which is exactly when the WPS module takes its turn.
+*who transmits*: the harvest holds it during a capture pass and releases it for
+the cooldown, which is exactly when the WPS service takes its turn. WPS is
+opportunistic — it waits for spare radio time and **never interrupts a capture**.
 
-**Opt-in gate:** ships **disarmed**. Nothing transmits until
-`wps_enabled = true` in `wpacrack.conf` (`sudo wps-arm` / `sudo wps-disarm`).
+**Opt-in gate:** ships **disarmed**. Nothing transmits until `wps_enabled = true`
+in `wpacrack.conf`; the running service re-reads the gate each cycle, so
+`sudo wps-arm` / `sudo wps-disarm` take effect without a restart.
 
-**Pipeline wiring:** `wps-attack.service` (oneshot, `Nice=19`, idle IO) fired by
-`wps-attack.timer` (`OnBootSec=20min`, `OnUnitActiveSec=2h`) — available on boot
-and while the rig is already up. Loot → `/opt/wpacrack/loot/<BSSID>/<ts>.loot`
-plus `wps_loot.txt` in the home dirs (mirrors how the harvest stores handshakes).
+**Pipeline wiring:** `wps-attack.service` (`Type=simple`, `Nice=19`, idle IO,
+`--daemon`) — continually active, up on boot and while the rig is already up.
+Loot -> `/opt/wpacrack/loot/<BSSID>/<ts>.loot` plus `wps_loot.txt` in the home
+dirs (mirrors how the harvest stores handshakes). Status -> `WPS_STATUS.txt`,
+log -> `wps.log`.
 
-**Helpers:** `wps-status`, `wps-run` (fire one pass now), `wps-arm`, `wps-disarm`.
+**Helpers:** `wps-status`, `wps-run` (force an immediate sweep), `wps-arm`,
+`wps-disarm`.

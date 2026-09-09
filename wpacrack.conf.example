@@ -25,3 +25,4 @@ wps_reaver_throttle    = 3:60        # -r : after 3 attempts, sleep 60s
 wps_online_max_seconds = 900         # hard cap on the whole online attempt
 wps_retry_cooldown     = 21600       # 6h : skip a target that yielded nothing
 wps_lock_cooldown      = 86400       # 24h : long back-off after any lock/rate-limit signal
+wps_cycle_idle         = 1800      # daemon: seconds to idle between full target sweeps

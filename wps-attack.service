@@ -1,13 +1,18 @@
 [Unit]
-Description=wps-attack - scope-locked lockout-safe WPS pixie/online attempt (authorized targets, opt-in)
+Description=wps-attack - continual lockout-safe WPS recovery (pixie->online PIN), coexists with the WPA harvest
 After=network.target
 
 [Service]
-Type=oneshot
-# spare-resources only: lowest CPU niceness + idle IO class (coexists with the harvest)
+Type=simple
+# spare-resources only: lowest CPU niceness + idle IO class (harvest stays primary)
 Nice=19
 IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
-ExecStart=/usr/bin/python3 /opt/wpacrack/wps_attack.py
-# tool is self-bounded; give the whole pass generous headroom then hard-stop
-TimeoutStartSec=2400
+ExecStart=/usr/bin/python3 /opt/wpacrack/wps_attack.py --daemon
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

