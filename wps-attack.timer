@@ -1,0 +1,10 @@
+[Unit]
+Description=Run wps-attack occasionally (opt-in; gated by wps_enabled in wpacrack.conf)
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

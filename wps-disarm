@@ -1,0 +1,8 @@
+#!/bin/bash
+CONF=/opt/wpacrack/wpacrack.conf
+if grep -qiE '^\s*wps_enabled\s*=' "$CONF"; then
+  sed -i -E 's/^\s*wps_enabled\s*=.*/wps_enabled = false/I' "$CONF"
+else
+  printf '\nwps_enabled = false\n' >> "$CONF"
+fi
+echo "WPS DISARMED:"; grep -iE '^\s*wps_enabled\s*=' "$CONF"

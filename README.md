@@ -258,3 +258,41 @@ scales up (larger corpus, full-text index) unchanged.
   a client is powered on and associated (a handshake requires a client to (re)join).
 - Adapter stability matters: the capture step needs reliable monitor mode + injection.
 - Cracking is out of scope by design — bring your own GPU box and wordlists.
+
+---
+
+## WPS attack module (`wps_attack.py`) — lockout-safe, opt-in
+
+A third leg of the kali-pie stack that recovers a WPA key via **WPS** when the
+handshake won't crack. It shares the single `wlan1` radio with the WPA harvest
+through a file lock, so the two never transmit at once and neither knocks the
+other off the air.
+
+**Sequence (authorized targets only):**
+1. **Recon** — `wash` on the target channel; proceed **only** if WPS is present
+   **and not locked**. Otherwise report and stop — never attack blind.
+2. **Pixie-dust** — offline-ish `reaver -K`, then `bully -d` as an alternate.
+   Cheapest, lowest-noise shot. Success → loot, done.
+3. **Online PIN** — conservative `reaver` (`-d 15 -r 3:60 --lock-delay 300`)
+   **only** if pixie failed, and it **aborts the instant** the AP signals a
+   lock / rate-limit. Losing a run is fine; locking the AP is not.
+
+**Never drives an AP into lockout:** lock/rate-limit detection with immediate
+back-off, `-r`/`-d` throttling, no `--ignore-locks`, and a per-target cooldown
+(6 h after a no-result, 24 h after any lock signal) so the timer can't grind a
+target toward a blacklist.
+
+**Radio coexistence with the harvest:** both stay in **monitor** mode (no
+managed/monitor churn). A shared flock at `/opt/wpacrack/.radio.lock` serialises
+*who transmits*: the harvest holds it during a capture burst and releases it for
+the long cooldown, which is exactly when the WPS module takes its turn.
+
+**Opt-in gate:** ships **disarmed**. Nothing transmits until
+`wps_enabled = true` in `wpacrack.conf` (`sudo wps-arm` / `sudo wps-disarm`).
+
+**Pipeline wiring:** `wps-attack.service` (oneshot, `Nice=19`, idle IO) fired by
+`wps-attack.timer` (`OnBootSec=20min`, `OnUnitActiveSec=2h`) — available on boot
+and while the rig is already up. Loot → `/opt/wpacrack/loot/<BSSID>/<ts>.loot`
+plus `wps_loot.txt` in the home dirs (mirrors how the harvest stores handshakes).
+
+**Helpers:** `wps-status`, `wps-run` (fire one pass now), `wps-arm`, `wps-disarm`.

@@ -15,3 +15,7 @@ __pycache__/
 *.mdl
 models/
 corpus_*.txt
+loot/
+wps_state/
+WPS_STATUS.txt
+wps_loot.txt

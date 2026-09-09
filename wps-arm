@@ -1,0 +1,9 @@
+#!/bin/bash
+# arm WPS (set wps_enabled=true). Requires root (conf is mode 600, root-owned).
+CONF=/opt/wpacrack/wpacrack.conf
+if grep -qiE '^\s*wps_enabled\s*=' "$CONF"; then
+  sed -i -E 's/^\s*wps_enabled\s*=.*/wps_enabled = true/I' "$CONF"
+else
+  printf '\n# WPS opt-in gate (added by wps-arm)\nwps_enabled = true\n' >> "$CONF"
+fi
+echo "WPS ARMED:"; grep -iE '^\s*wps_enabled\s*=' "$CONF"

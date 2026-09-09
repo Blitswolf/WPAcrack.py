@@ -1,0 +1,3 @@
+#!/bin/bash
+# fire a single WPS pass immediately (still gated by wps_enabled in wpacrack.conf)
+systemctl start wps-attack.service && journalctl -u wps-attack.service -n 20 --no-pager

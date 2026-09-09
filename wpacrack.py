@@ -15,7 +15,7 @@ come back to a STATUS/RESULT beacon. Restores the box to a clean managed state o
 > AP named in wpacrack.conf. It refuses to start without a configured target BSSID, so it can
 > never wander onto a neighbouring network.
 """
-import os, sys, time, subprocess, signal, re, glob, traceback, datetime, random
+import os, sys, time, subprocess, signal, re, glob, traceback, datetime, random, fcntl
 
 # ---------------- CONFIG ----------------
 # Site-specific values are loaded from wpacrack.conf (see wpacrack.conf.example); the conf file
@@ -55,6 +55,7 @@ CUSTOM = WORK + "/candidates.txt"    # optional targeted candidate list (deliver
 GOOD   = WORK + "/handshake.cap"     # the captured handshake
 HASH22 = WORK + "/wpa.22000"         # hashcat-ready (mode 22000), if hcxpcapngtool is available
 HOMES  = ["/root", "/home/kali", "/home/kali-pie"]
+RADIO_LOCK = WORK + "/.radio.lock"   # shared with wps_attack.py - serialises who transmits on the single wlan1 radio
 
 children = []
 _state = {"phase": "init", "detail": "", "started": time.time()}
@@ -199,6 +200,36 @@ def set_managed():
 
 def set_channel(ch):
     run(["iw", "dev", IFACE, "set", "channel", str(ch)])
+
+
+# ---- shared radio coexistence (WPA harvest <-> wps_attack) --------------------
+# One physical radio (wlan1) serves both the WPA handshake harvest and the WPS
+# module. Both stay in monitor mode; this flock just serialises who is allowed to
+# TRANSMIT so the two never step on each other and neither knocks the other off
+# the air. The harvest holds it only during a capture burst and releases it for
+# the (long) cooldown, which is exactly when wps_attack takes its turn. Fail-open:
+# if the lock can't be created we behave exactly as before (never block capture).
+_radio_fd = None
+def radio_acquire(wait_max):
+    global _radio_fd
+    try:
+        _radio_fd = open(RADIO_LOCK, "w")
+    except Exception:
+        return True
+    t0 = time.time()
+    while time.time() - t0 < wait_max:
+        try:
+            fcntl.flock(_radio_fd, fcntl.LOCK_EX | fcntl.LOCK_NB); return True
+        except OSError:
+            time.sleep(10)
+    return False
+
+def radio_release():
+    global _radio_fd
+    if _radio_fd:
+        try: fcntl.flock(_radio_fd, fcntl.LOCK_UN); _radio_fd.close()
+        except Exception: pass
+        _radio_fd = None
 
 
 def kill_children():
@@ -428,7 +459,16 @@ def harvest_loop():
         global _deauth_rounds
         _deauth_rounds = 0          # each cycle gets its own gentle, capped deauth budget
         set_state("harvest", f"cycle {cyc}: hunting {len(stale)} stale target(s)")
-        bssid = capture()            # reuses the lockout-safe capture(); does NOT touch NM
+        # coexist with wps_attack: hold the shared radio only for the capture burst,
+        # then release it for the cooldown so the WPS module can take its turn.
+        if radio_acquire(COOLDOWN):
+            try:
+                bssid = capture()    # reuses the lockout-safe capture(); does NOT touch NM
+            finally:
+                radio_release()
+        else:
+            bssid = None
+            set_state("harvest", f"cycle {cyc}: wps_attack holds the radio; skipping this burst to coexist")
         if bssid:
             archive(bssid)
             n = sum(len(os.listdir(os.path.join(LIBRARY, d))) for d in os.listdir(LIBRARY)

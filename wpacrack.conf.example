@@ -15,3 +15,13 @@ custom_seeds =
 library      = /opt/wpacrack/library
 cooldown     = 1800      # seconds to idle between capture cycles
 refresh_ttl  = 86400     # skip a BSSID that already has a handshake newer than this (seconds)
+
+# --- WPS attack module (wps_attack.py) ---
+# HARD opt-in gate: nothing transmits until this is true (use `sudo wps-arm` / `sudo wps-disarm`).
+wps_enabled            = false
+wps_online_enabled     = true        # step-3 online PIN fallback (pixie is step 2, always first)
+wps_reaver_delay       = 15          # -d : seconds between PIN attempts
+wps_reaver_throttle    = 3:60        # -r : after 3 attempts, sleep 60s
+wps_online_max_seconds = 900         # hard cap on the whole online attempt
+wps_retry_cooldown     = 21600       # 6h : skip a target that yielded nothing
+wps_lock_cooldown      = 86400       # 24h : long back-off after any lock/rate-limit signal
