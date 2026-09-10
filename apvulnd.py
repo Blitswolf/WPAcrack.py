@@ -143,9 +143,23 @@ def write_fingerprint(bssid, fp):
     """Persist the fingerprint as JSON so the apresearch model can reason over it (and later run
     scaled-up on the other Pi)."""
     os.makedirs(FP_DIR, exist_ok=True)
-    rec = dict(fp); rec["bssid"] = bssid
+    path = os.path.join(FP_DIR, bssid.replace(":", "") + ".json")
+    # MERGE into any existing record so aprecon's RF enrichment (real M1 device fields, client
+    # inventory, in-scope PNL) survives this hourly write, and a real value is never clobbered by
+    # an empty beacon value.
+    existing = {}
     try:
-        json.dump(rec, open(os.path.join(FP_DIR, bssid.replace(":", "") + ".json"), "w"))
+        if os.path.exists(path):
+            existing = json.load(open(path))
+    except Exception:
+        existing = {}
+    rec = dict(fp); rec["bssid"] = bssid
+    for k, v in rec.items():
+        if isinstance(v, str) and not v and existing.get(k):
+            continue
+        existing[k] = v
+    try:
+        json.dump(existing, open(path, "w"), indent=2)
     except Exception:
         pass
 

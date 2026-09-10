@@ -31,6 +31,7 @@ LOG        = "/opt/apvuln/aprecon.log"
 STATUS     = "/opt/apvuln/APRECON_STATUS.txt"
 
 IFACE      = "wlan1"
+ESSID      = ""            # authorized lab ESSID — used to scope PNL collection to the lab
 TARGETS    = []
 SNIFF_SECS = 45            # passive capture window per target
 WPS_M1     = True          # attempt the lockout-safe M1 device read
@@ -65,7 +66,7 @@ def run(cmd, timeout=60):
 
 
 def load_conf():
-    global IFACE, TARGETS, WPS_M1, SNIFF_SECS
+    global IFACE, TARGETS, WPS_M1, SNIFF_SECS, ESSID
     path = next((p for p in CONF_PATHS if os.path.exists(p)), None)
     if not path:
         log("FATAL: no wpacrack.conf"); sys.exit(2)
@@ -75,6 +76,7 @@ def load_conf():
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1); cfg[k.strip().lower()] = v.strip()
     IFACE = _val(cfg.get("iface", IFACE)) or IFACE
+    ESSID = _val(cfg.get("essid", ""))
     if "aprecon_sniff_secs" in cfg:
         try: SNIFF_SECS = int(_val(cfg["aprecon_sniff_secs"]))
         except Exception: pass
@@ -160,19 +162,31 @@ def passive_sniff(bssid, ch):
                 mac, name = cols[i].strip().lower(), (cols[i + 1].strip() if i + 1 < len(cols) else "")
                 if mac and mac != bssid.lower() and mac != "ff:ff:ff:ff:ff:ff" and not mac.startswith("01:00:5e"):
                     clients.setdefault(mac, name or "?")
-    # probe requests -> preferred network list (what clients around here look for)
-    pnl = set()
+    # probe requests -> PNL, SCOPED TO THE LAB: keep a probed SSID only if it IS the lab ESSID, or
+    # the prober is a device we already saw on the authorized BSSID. Neighbours' networks (from
+    # ambient probe requests of devices not on our network) are dropped as out-of-scope.
+    pnl, dropped = set(), 0
     r2 = run(["tshark", "-r", pcap, "-n", "-Y",
               "wlan.fc.type_subtype==4 && wlan.ssid!=\"\"",
-              "-T", "fields", "-e", "wlan.ssid"], timeout=60)
+              "-T", "fields", "-e", "wlan.sa", "-e", "wlan.ssid"], timeout=60)
     for line in (getattr(r2, "stdout", "") or "").splitlines():
-        s = line.strip()
-        if s:
-            try: pnl.add(bytes.fromhex(s).decode("utf-8", "replace") if re.fullmatch(r"[0-9a-fA-F]*", s) and len(s) % 2 == 0 else s)
-            except Exception: pnl.add(s)
+        cols = line.split("\t")
+        if len(cols) < 2:
+            continue
+        sa, s = cols[0].strip().lower(), cols[1].strip()
+        if not s:
+            continue
+        try:
+            ssid = bytes.fromhex(s).decode("utf-8", "replace") if re.fullmatch(r"[0-9a-fA-F]+", s) and len(s) % 2 == 0 else s
+        except Exception:
+            ssid = s
+        if ssid == ESSID or sa in clients:      # in-scope: our AP's name, or a device on our network
+            pnl.add(ssid)
+        else:
+            dropped += 1
     try: os.remove(pcap)
     except Exception: pass
-    log(f"passive: {len(clients)} client(s), {len(pnl)} PNL entry(ies) for {bssid}")
+    log(f"passive: {len(clients)} client(s), {len(pnl)} in-scope PNL, {dropped} out-of-scope neighbour PNL dropped for {bssid}")
     return clients, sorted(x for x in pnl if x)
 
 
