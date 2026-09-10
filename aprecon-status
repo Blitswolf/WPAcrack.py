@@ -1,0 +1,7 @@
+#!/bin/bash
+echo "=== timer ==="; systemctl is-enabled aprecon.timer 2>/dev/null; systemctl list-timers aprecon.timer --no-pager 2>/dev/null | head -2
+echo; echo "=== APRECON_STATUS.txt ==="; cat /opt/apvuln/APRECON_STATUS.txt 2>/dev/null || echo "(none yet)"
+echo; echo "=== enriched device fields in fingerprints ==="
+for f in /opt/apvuln/fingerprints/*.json; do [ -f "$f" ] && echo "-- $f --" && python3 -c "import json,sys;d=json.load(open('$f'));print('  wps_manuf=',d.get('wps_manuf'),'model=',d.get('wps_model'),'device=',d.get('wps_device'));print('  clients=',len(d.get('aprecon_clients',[])),' pnl=',len(d.get('aprecon_pnl',[])))" 2>/dev/null; done
+echo; echo "=== latest aprecon reports ==="; ls -1 /opt/apvuln/aprecon/*.txt 2>/dev/null | sed 's,^,  ,'
+echo; echo "=== last 10 log lines ==="; tail -10 /opt/apvuln/aprecon.log 2>/dev/null || echo "(no log)"

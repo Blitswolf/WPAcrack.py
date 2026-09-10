@@ -1,0 +1,11 @@
+[Unit]
+Description=aprecon - RF-side fingerprint enrichment for the research model (passive client/PNL + lockout-safe WPS M1)
+After=network.target
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+ExecStart=/usr/bin/python3 /opt/apvuln/aprecon.py
+TimeoutStartSec=4800

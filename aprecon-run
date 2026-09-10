@@ -1,0 +1,2 @@
+#!/bin/bash
+systemctl start aprecon.service && sleep 2 && journalctl -u aprecon.service -n 25 --no-pager

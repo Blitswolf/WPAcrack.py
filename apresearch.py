@@ -25,7 +25,18 @@ Modes:
                    latest AP fingerprints (written by apvulnd), rotate the deep-mine set, refine.
 """
 import os, re, sys, csv, json, math, time, glob
+import multiprocessing as mp
 from collections import defaultdict, Counter
+
+# Resource budget: this model is the ONLY CPU-hungry job on the (idle, 4-core Pi 5) capture box, so
+# let it use the spare cores. The service still runs under SCHED_IDLE, so these workers burst onto
+# idle cores yet yield INSTANTLY to the radio/RF stack if it ever needs CPU (RF is radio-bound, so
+# in practice the model gets the whole box). Override with APRESEARCH_WORKERS.
+try:
+    WORKERS = int(os.environ.get("APRESEARCH_WORKERS", "0")) or (os.cpu_count() or 1)
+except Exception:
+    WORKERS = os.cpu_count() or 1
+_MP_INDEX = None   # set in the parent before forking; workers inherit it copy-on-write (no pickling)
 
 EDB_DIR   = "/usr/share/exploitdb"
 CSV_PATH  = EDB_DIR + "/files_exploits.csv"
@@ -119,18 +130,47 @@ def query_vector(terms, idf):
     return v, norm
 
 
-def rank(index, terms, topk=25):
-    qv, qn = query_vector(terms, index["idf"])
-    if not qv:
-        return []
-    scored = []
-    for i, vec in enumerate(index["vectors"]):
-        dv = vec["v"]
-        # iterate the smaller vector
+def _score_slice(args):
+    """Score vectors [lo:hi) against the query — run in a worker that inherited _MP_INDEX via fork."""
+    lo, hi, qv, qn = args
+    vecs = _MP_INDEX["vectors"]
+    out = []
+    for i in range(lo, hi):
+        dv = vecs[i]["v"]
         small, big = (qv, dv) if len(qv) < len(dv) else (dv, qv)
         dot = sum(w * big.get(t, 0.0) for t, w in small.items())
         if dot > 0:
-            scored.append((dot / (qn * vec["norm"]), i))
+            out.append((dot / (qn * vecs[i]["norm"]), i))
+    return out
+
+
+def rank(index, terms, topk=25, workers=None):
+    """Cosine-rank the corpus against the fingerprint terms. Parallelised across the Pi's cores so a
+    growing corpus stays fast; falls back to serial for small corpora or when workers==1."""
+    qv, qn = query_vector(terms, index["idf"])
+    if not qv:
+        return []
+    N = len(index["vectors"])
+    w = workers or WORKERS
+    if w <= 1 or N < 4000:
+        scored = []
+        for i, vec in enumerate(index["vectors"]):
+            dv = vec["v"]
+            small, big = (qv, dv) if len(qv) < len(dv) else (dv, qv)
+            dot = sum(x * big.get(t, 0.0) for t, x in small.items())
+            if dot > 0:
+                scored.append((dot / (qn * vec["norm"]), i))
+    else:
+        global _MP_INDEX
+        _MP_INDEX = index
+        step = (N + w - 1) // w
+        tasks = [(lo, min(lo + step, N), qv, qn) for lo in range(0, N, step)]
+        try:
+            with mp.Pool(w) as pool:
+                parts = pool.map(_score_slice, tasks)
+            scored = [t for part in parts for t in part]
+        except Exception:
+            scored = _score_slice((0, N, qv, qn))   # fall back to serial on any pool error
     scored.sort(reverse=True)
     return [(s, index["docs"][i]) for s, i in scored[:topk]]
 
@@ -235,6 +275,16 @@ def main():
         classes, neigh = research(index, "adhoc-query", {"vendor": " ".join(terms)})
         for cls, sc in classes[:8]:
             print(f"{sc:5.2f}  {cls}")
+        return
+    if mode == "research":
+        # regenerate intel for a single (freshly enriched) fingerprint on demand
+        bssid = sys.argv[2] if len(sys.argv) > 2 else ""
+        fps = load_fingerprints()
+        fp = fps.get(bssid) or fps.get(bssid.upper())
+        if not fp:
+            sys.stderr.write(f"no fingerprint for {bssid}\n"); sys.exit(2)
+        research(index, fp.get("bssid", bssid), fp)
+        print(f"research regenerated for {bssid} -> {OUT_DIR}")
         return
     if mode == "serve":
         # continuous low-priority research: keep re-running over the latest fingerprints, so the

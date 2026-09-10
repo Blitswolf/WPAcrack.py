@@ -328,3 +328,27 @@ pre-herding clients on that radio before flipping it to the twin.
 
 **Helpers:** `eviltwin-radiocheck` (which adapters can be the AP), `eviltwin-arm` / `eviltwin-disarm`,
 `eviltwin-run` (one bounded session now), `eviltwin-status`. Loot -> `/opt/wpacrack/loot/<BSSID>/eviltwin-<ts>.loot`.
+
+---
+
+## RF-enrichment recon (`aprecon.py`) + parallel research model
+
+**`aprecon`** turns the research model's *generic* fingerprint into a *specific* one **without LAN
+access**, from two RF sources — scope-locked to the authorized BSSID and radio-lock-coordinated with
+the harvest:
+- **Passive (monitor RX only):** connected-client inventory (MAC → OUI vendor) + probe-request PNLs.
+- **WPS M1 device read (lockout-safe):** the AP sends M1 first, carrying real Manufacturer / Model /
+  Model-Number / Device-Name / Serial / OS / UUID. aprecon reads M1 and **aborts before any PIN is
+  guessed** (the PIN check is at M4/M6), so it adds no failed-auth and can't trip a lockout. It also
+  **respects the WPS module's per-target cooldown** — it won't poke a rate-limited AP.
+
+Results **merge** into `/opt/apvuln/fingerprints/<bssid>.json` (never clobbering apvulnd's beacon
+fields), so `apresearch` reasons over "Netgear R7000" instead of "a wireless AP" — which is what
+finally populates its analogues and test plan. Runs on `aprecon.timer` (every 6h); `aprecon-run`,
+`aprecon-status` helpers.
+
+**Parallel research model:** `apresearch` now parallelises its cosine-ranking hot loop across the
+box's cores (`APRESEARCH_WORKERS`, default = all cores) — workers fork after the index is loaded, so
+the 95 MB index is shared copy-on-write with no pickling. The service still runs under `SCHED_IDLE`,
+so it bursts onto the (idle Pi 5) spare cores yet yields instantly to the RF stack. A one-shot
+`apresearch.py research <bssid>` mode lets aprecon trigger an immediate regenerate after enrichment.
