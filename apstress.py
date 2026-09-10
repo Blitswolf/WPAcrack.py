@@ -140,9 +140,12 @@ def release_radio():
         except Exception: pass
         _radio_fd = None
 
-def ensure_monitor(ch):
+def is_monitor():
     info = run(["iw", "dev", IFACE, "info"])
-    if "type monitor" not in (getattr(info, "stdout", "") or ""):
+    return "type monitor" in (getattr(info, "stdout", "") or "")
+
+def ensure_monitor(ch, force=False):
+    if force or not is_monitor():
         run(["ip", "link", "set", IFACE, "down"])
         run(["iw", "dev", IFACE, "set", "type", "monitor"])
         run(["ip", "link", "set", IFACE, "up"])
@@ -164,7 +167,7 @@ def evidence(stage, elapsed, note=""):
 def stress_run():
     bssid, hint = TARGETS[0]
     ch = published_channel(bssid, hint)
-    ensure_monitor(ch)
+    ensure_monitor(ch, force=True)   # mdk4 injects only in monitor mode — force it, don't trust a stale report
     set_status("baseline", f"{bssid} ch{ch} — record IDLE IR temp now; flood starts in 10s")
     evidence("baseline", 0, "idle before flood — take IR baseline reading")
     time.sleep(10)   # gives you a moment to take the cold-baseline IR reading
@@ -182,11 +185,21 @@ def stress_run():
     evidence("flood-start", 0, "sustained auth flood begins")
     try:
         while not _stop and (time.time() - t0) < MAX_SECONDS:
-            if p.poll() is not None:
-                log("mdk4 exited unexpectedly — restarting flood");
+            # mdk4 only injects in monitor mode. If wlan1 drifted to managed (NM/driver/harvest churn)
+            # the flood is silently doing NOTHING — detect it, re-assert monitor, and respawn mdk4.
+            drifted = not is_monitor()
+            if drifted:
+                log("wlan1 not in monitor mid-flood — re-asserting monitor + restarting mdk4 (flood was NOT injecting)")
+                ensure_monitor(ch, force=True)
+            if drifted or p.poll() is not None:
+                try: p.terminate(); p.wait(timeout=3)
+                except Exception:
+                    try: p.kill()
+                    except Exception: pass
                 p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); _children.append(p)
             el = int(time.time() - t0)
-            set_status("flooding", f"{bssid} ch{ch} — flooding {el}s/{MAX_SECONDS}s (log an IR reading each heartbeat)")
+            mon = "monitor-OK" if is_monitor() else "NOT-monitor"
+            set_status("flooding", f"{bssid} ch{ch} — flooding {el}s/{MAX_SECONDS}s [{mon}] (log an IR reading each heartbeat)")
             evidence("flood", el, "take an IR reading now")
             slept = 0
             while slept < HEARTBEAT and not _stop:
