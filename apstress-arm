@@ -1,0 +1,7 @@
+#!/bin/bash
+CONF=/opt/wpacrack/wpacrack.conf
+if grep -qiE '^\s*stress_enabled\s*=' "$CONF"; then
+  sed -i -E 's/^\s*stress_enabled\s*=.*/stress_enabled = true/I' "$CONF"
+else printf '\nstress_enabled = true\n' >> "$CONF"; fi
+echo "APSTRESS ARMED:"; grep -iE '^\s*stress_enabled' "$CONF"
+echo "run: sudo apstress-run   (watch the IR gun; stop anytime: sudo apstress-stop)"

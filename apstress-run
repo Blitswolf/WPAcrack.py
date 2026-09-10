@@ -1,0 +1,5 @@
+#!/bin/bash
+grep -qiE '^\s*stress_enabled\s*=\s*(true|yes|on|1)' /opt/wpacrack/wpacrack.conf || { echo "not armed — run: sudo apstress-arm"; exit 1; }
+systemctl start apstress.service && sleep 2 && journalctl -u apstress.service -n 12 --no-pager
+echo "-- STOP anytime:  sudo apstress-stop   |  live status: sudo apstress-status"
+echo "-- take an IR reading each heartbeat; readings/timestamps -> /opt/wpacrack/apstress_evidence.csv"

@@ -1,0 +1,5 @@
+#!/bin/bash
+echo "=== service ==="; systemctl is-active apstress.service 2>/dev/null
+echo "=== armed? ==="; grep -qiE '^\s*stress_enabled\s*=\s*(true|yes|on|1)' /opt/wpacrack/wpacrack.conf 2>/dev/null && echo "ARMED" || echo "DISARMED"
+echo "=== APSTRESS_STATUS.txt ==="; cat /opt/wpacrack/APSTRESS_STATUS.txt 2>/dev/null || echo "(none yet)"
+echo "=== evidence CSV (align your IR readings) ==="; tail -8 /opt/wpacrack/apstress_evidence.csv 2>/dev/null || echo "(none yet)"

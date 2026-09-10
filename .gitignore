@@ -25,3 +25,6 @@ eviltwin_loot.txt
 APRECON_STATUS.txt
 aprecon.log
 aprecon/
+APSTRESS_STATUS.txt
+apstress.log
+apstress_evidence.csv

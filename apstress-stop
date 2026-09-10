@@ -1,0 +1,2 @@
+#!/bin/bash
+systemctl stop apstress.service && echo "apstress STOPPED (radio returned to harvest)."

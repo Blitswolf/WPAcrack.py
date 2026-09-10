@@ -367,3 +367,29 @@ BSSID and *finds* the AP's current channel instead of trusting the pinned config
 - **WPS, eviltwin, aprecon** read that published channel (falling back to the config hint if it's
   missing/stale), so every RF leg follows the AP after a channel move instead of sitting blind on a
   dead channel. Scope-locked throughout — rediscovery only ever follows *that BSSID*.
+
+---
+
+## AP thermal/power stress load (`apstress.py`) — own-AP hardware characterization
+
+Drives **maximum sustained SoC load** on the authorized AP so its heat/power response can be
+measured (external IR thermometer / power meter) for lab evidence.
+
+**Method — max continual load that surpasses per-MAC anti-flood:** an `mdk4` authentication flood
+from **randomised source MACs**. Per-MAC rate-limiting can't latch onto any one MAC, and every fake
+client forces the AP to allocate association-table state → the SoC stays pegged = the largest
+thermal signal reachable over RF.
+
+**Lockout-safe by construction:** it sends **no WPS frames**, so it cannot trip a WPS lockout (a
+separate subsystem driven by failed PIN attempts). Worst realistic case under extreme load is a
+transient, self-recovering AP reboot — not a lockout.
+
+**The physics ceiling (why this characterizes, not destroys):** total draw ≈ fixed static power
+(PSU/PHY/PA bias, ~10 W) + a small load-dependent dynamic term (a few W). Since ΔT = P·R_th and the
+AP thermally throttles/reboots before damage, RF load **cannot** thermally kill a well-ventilated AP
+— the useful result is the *self-limiting curve*, not a dead unit.
+
+**Guards:** scope-locked to the authorized BSSID; opt-in (`stress_enabled`, ships **disarmed**,
+never boot-enabled); **hard max-duration**; instant manual stop (`apstress-stop`); BSSID-anchored
+channel; radio-lock coexistence. Timestamped load log → `apstress_evidence.csv` to align IR/power
+readings into a load→temperature curve. Helpers: `apstress-{arm,disarm,run,stop,status}`.

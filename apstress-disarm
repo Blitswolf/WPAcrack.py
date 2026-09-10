@@ -1,0 +1,5 @@
+#!/bin/bash
+CONF=/opt/wpacrack/wpacrack.conf
+sed -i -E 's/^\s*stress_enabled\s*=.*/stress_enabled = false/I' "$CONF" 2>/dev/null || printf '\nstress_enabled = false\n' >> "$CONF"
+systemctl stop apstress.service 2>/dev/null
+echo "APSTRESS DISARMED + stopped:"; grep -iE '^\s*stress_enabled' "$CONF"

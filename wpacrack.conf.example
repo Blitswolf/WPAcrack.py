@@ -44,3 +44,10 @@ eviltwin_portal_ip   = 10.0.0.1
 aprecon_sniff_secs   = 45      # passive monitor capture window per target (client inventory + PNL)
 aprecon_wps_m1       = true    # read the AP's WPS M1 device attributes (lockout-safe: no PIN sent).
                                # Respects the WPS module's per-target cooldown (won't poke a rate-limited AP).
+
+# --- apstress (AP thermal/power stress load — own-AP hardware characterization) ---
+# HARD opt-in gate: no flooding until true. On-demand only (never boot-enabled). It is a DoS load;
+# sends NO WPS frames so it cannot cause a WPS lockout. Use `sudo apstress-arm` then `sudo apstress-run`.
+stress_enabled     = false
+stress_iface       = wlan1     # needs reliable injection (the RTL8812AU), borrowed via the radio lock
+stress_max_seconds = 900       # HARD cap per run (primary safety bound; stop early with apstress-stop)
