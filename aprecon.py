@@ -60,6 +60,18 @@ def set_status(phase, detail=""):
 
 def _val(v): return str(v).split("#")[0].strip()
 
+def published_channel(bssid, hint, ttl=21600):
+    """Read the harvest-published current channel for this BSSID (BSSID-anchored rediscovery); fall
+    back to the config hint if missing/stale. Keeps aprecon on the AP's real channel after a 2.4
+    auto-channel change or a 5GHz DFS move."""
+    try:
+        ch, ts = open(os.path.join(WORK, "channels", bssid.replace(":", ""))).read().split()
+        if time.time() - float(ts) < ttl:
+            return int(ch)
+    except Exception:
+        pass
+    return hint
+
 def run(cmd, timeout=60):
     try: return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except Exception as e: log(f"run error {cmd}: {e}"); return None
@@ -296,6 +308,7 @@ def main():
     signal.signal(signal.SIGTERM, on_sig)
     try:
         for bssid, ch in TARGETS:
+            ch = published_channel(bssid, ch)   # follow the AP if it changed channel
             try:
                 clients, pnl = passive_sniff(bssid, ch)
                 m1 = wps_m1_read(bssid, ch)

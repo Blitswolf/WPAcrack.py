@@ -91,6 +91,18 @@ def _int(v, default):
     try: return int(_val(v).split()[0])
     except Exception: return default
 
+def published_channel(bssid, hint, ttl=21600):
+    """Read the harvest-published current channel for this BSSID (BSSID-anchored rediscovery); fall
+    back to the config hint if missing/stale. Keeps the twin on the AP's real channel after a 2.4
+    auto-channel change or a 5GHz DFS move."""
+    try:
+        ch, ts = open(os.path.join(WORK, "channels", bssid.replace(":", ""))).read().split()
+        if time.time() - float(ts) < ttl:
+            return int(ch)
+    except Exception:
+        pass
+    return hint
+
 def run(cmd, timeout=30):
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
