@@ -392,4 +392,4 @@ AP thermally throttles/reboots before damage, RF load **cannot** thermally kill 
 **Guards:** scope-locked to the authorized BSSID; opt-in (`stress_enabled`, ships **disarmed**,
 never boot-enabled); **hard max-duration**; instant manual stop (`apstress-stop`); BSSID-anchored
 channel; radio-lock coexistence. Timestamped load log → `apstress_evidence.csv` to align IR/power
-readings into a load→temperature curve. Helpers: `apstress-{arm,disarm,run,stop,status}`.
+readings into a load→temperature curve. Runs on-demand (`apstress-run`) or as a **continual duty-cycled daemon** (`apstress.service`, armed via `stress_enabled`): it loops flood -> yield, re-reading the arm gate each cycle and yielding the radio between floods (MAX_SECONDS flood : COOLDOWN yield) so the harvest/WPS/aprecon still run. Helpers: `apstress-{arm,disarm,run,stop,status}`.

@@ -51,3 +51,4 @@ aprecon_wps_m1       = true    # read the AP's WPS M1 device attributes (lockout
 stress_enabled     = false
 stress_iface       = wlan1     # needs reliable injection (the RTL8812AU), borrowed via the radio lock
 stress_max_seconds = 900       # HARD cap per run (primary safety bound; stop early with apstress-stop)
+stress_cooldown    = 180       # daemon: radio YIELD between floods (short = AP stays hot)

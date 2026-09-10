@@ -1,14 +1,14 @@
 [Unit]
-Description=apstress - scope-locked, opt-in, time-bounded AP thermal/power stress load (own-AP characterization)
+Description=apstress - continual duty-cycled AP thermal/power stress load (armed; coexists via the radio lock)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/wpacrack/apstress.py
-Restart=no
+ExecStart=/usr/bin/python3 /opt/wpacrack/apstress.py --daemon
+Restart=on-failure
+RestartSec=30
 KillSignal=SIGTERM
 TimeoutStopSec=30
-# self-bounded by stress_max_seconds; headroom then hard-stop
-TimeoutStartSec=2400
 
-# intentionally NOT boot-enabled — it is a flood; runs only when armed + started (sudo apstress-run).
+[Install]
+WantedBy=multi-user.target

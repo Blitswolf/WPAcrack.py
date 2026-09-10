@@ -36,14 +36,18 @@ ESSID      = ""
 TARGETS    = []
 
 ENABLED    = False       # HARD opt-in gate: no flooding until stress_enabled = true
-MAX_SECONDS = 900        # hard cap on one stress run (then auto-stop) — the primary safety bound
+MAX_SECONDS = 1200       # flood duration per cycle (also the one-shot hard cap)
+COOLDOWN   = 180         # daemon: seconds to YIELD the radio between flood cycles (so the harvest/
+                         # WPS/aprecon still get turns — "continual" but coexisting). Short = hot.
+GATE_POLL  = 120         # daemon: how often to re-check the arm gate while disarmed
 HEARTBEAT  = 30          # seconds between elapsed/status log lines (for IR-reading alignment)
 RADIO_WAIT = 600         # seconds to wait for the shared radio
 REQUIRED_TOOLS = ("mdk4", "iw", "ip")
 
 _radio_fd = None
 _children = []
-_stop = False
+_stop = False            # ends the current flood cycle
+_terminate = False       # exits the daemon loop entirely (on SIGTERM/SIGINT)
 
 
 def now(): return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -71,7 +75,7 @@ def run(cmd, timeout=30):
 
 
 def load_conf():
-    global IFACE, ESSID, TARGETS, ENABLED, MAX_SECONDS
+    global IFACE, ESSID, TARGETS, ENABLED, MAX_SECONDS, COOLDOWN
     path = next((p for p in CONF_PATHS if os.path.exists(p)), None)
     if not path:
         log("FATAL: no wpacrack.conf"); sys.exit(2)
@@ -84,6 +88,8 @@ def load_conf():
     ESSID = _val(cfg.get("essid", ""))
     ENABLED = _val(cfg.get("stress_enabled", "false")).lower() in ("1", "true", "yes", "on")
     try: MAX_SECONDS = int(_val(cfg.get("stress_max_seconds", str(MAX_SECONDS))))
+    except Exception: pass
+    try: COOLDOWN = int(_val(cfg.get("stress_cooldown", str(COOLDOWN))))
     except Exception: pass
     TARGETS = []
     for tok in cfg.get("targets", "").split(","):
@@ -198,25 +204,67 @@ def stress_run():
         set_status("cooldown", f"flood stopped after {el}s — record peak IR temp; log cool-down readings")
 
 
-def main():
-    load_conf()
-    if not ENABLED:
-        set_status("disabled", "stress_enabled is not true — dormant (no flooding). Arm with `sudo apstress-arm`.")
-        return
-    preflight()
-    def on_sig(s, f):
-        global _stop; _stop = True; log(f"signal {s} — stopping flood")
-    signal.signal(signal.SIGTERM, on_sig); signal.signal(signal.SIGINT, on_sig)
+def _one_cycle():
+    """Borrow the radio, run one bounded flood session, then hand the radio back so the rest of the
+    pipeline gets a turn. Returns after the flood cycle (or immediately if the radio stays busy)."""
     if not acquire_radio():
-        set_status("no-radio", "could not borrow the radio (harvest busy) — try again"); return
+        set_status("no-radio", "could not borrow the radio (harvest busy) — will retry"); return
     try:
         stress_run()
     finally:
-        # restore monitor mode for the harvest and drop the lock
         run(["iw", "dev", IFACE, "set", "channel", str(TARGETS[0][1])])
         release_radio()
-        set_status("done", "radio released to harvest (monitor preserved); evidence -> apstress_evidence.csv")
+        set_status("cooldown", f"radio yielded to the pipeline for {COOLDOWN}s (harvest/WPS/aprecon get a turn)")
+
+
+def _install_signals():
+    def on_sig(s, f):
+        global _stop, _terminate
+        _stop = True; _terminate = True; log(f"signal {s} — stopping flood + exiting")
+    signal.signal(signal.SIGTERM, on_sig); signal.signal(signal.SIGINT, on_sig)
+
+
+def run_once():
+    """Single bounded flood (manual `apstress-run` without --daemon)."""
+    load_conf()
+    if not ENABLED:
+        set_status("disabled", "stress_enabled is not true — dormant. Arm with `sudo apstress-arm`."); return
+    preflight(); _install_signals(); _one_cycle()
+    set_status("done", "single stress run complete; evidence -> apstress_evidence.csv")
+
+
+def daemon_loop():
+    """Continual, AUTO stress as part of the pipeline: loop flood -> yield -> flood, re-reading the
+    arm gate each cycle (so `apstress-disarm` stops it without a restart) and yielding the radio
+    between floods so the harvest/WPS/aprecon still run. Duty cycle = MAX_SECONDS flood : COOLDOWN
+    yield (short yield = the AP stays hot). NO WPS frames -> still cannot cause a WPS lockout."""
+    _install_signals()
+    preflighted = False
+    log("apstress daemon starting (continual, duty-cycled, lockout-safe, pipeline-coexisting)")
+    while not _terminate:
+        try:
+            load_conf()
+            if not ENABLED:
+                set_status("dormant", "stress_enabled=false — service up but idle. Arm with `sudo apstress-arm`.")
+                _sleep_interruptible(GATE_POLL); continue
+            if not preflighted:
+                preflight(); preflighted = True
+            _one_cycle()
+        except SystemExit:
+            raise
+        except Exception:
+            import traceback; log("daemon cycle error:\n" + traceback.format_exc())
+        _sleep_interruptible(COOLDOWN)
+
+
+def _sleep_interruptible(secs):
+    slept = 0
+    while slept < secs and not _terminate:
+        time.sleep(1); slept += 1
 
 
 if __name__ == "__main__":
-    main()
+    if "--daemon" in sys.argv:
+        daemon_loop()
+    else:
+        run_once()
