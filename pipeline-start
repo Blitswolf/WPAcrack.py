@@ -1,0 +1,15 @@
+#!/bin/bash
+# FULL START — bring the whole pipeline up. Offensive stages start but stay DORMANT unless their conf
+# gate is armed (wps_enabled / eviltwin_enabled / stress_enabled). Arm explicitly to fire them.
+set +e
+systemctl daemon-reload
+echo "[start] capture + research (benign, continuous)"
+systemctl enable --now wpacrack-harvest.service apresearch.service 2>/dev/null
+systemctl enable --now apvuln.timer aprecon.timer 2>/dev/null
+echo "[start] gated daemons (dormant unless armed)"
+systemctl enable --now wps-attack.service apstress.service 2>/dev/null
+echo "[start] state:"
+for u in wpacrack-harvest apresearch wps-attack apstress; do printf "    %-20s %s\n" "$u.service" "$(systemctl is-active $u.service 2>/dev/null)"; done
+for u in apvuln aprecon; do printf "    %-20s %s\n" "$u.timer" "$(systemctl is-active $u.timer 2>/dev/null)"; done
+echo "[start] armed gates:"; grep -iE '^[[:space:]]*(wps_enabled|eviltwin_enabled|stress_enabled)[[:space:]]*=' /opt/wpacrack/wpacrack.conf 2>/dev/null | sed 's/^/      /'
+echo "[start] DONE. Arm offensive stages with: sudo wps-arm | sudo eviltwin-arm | sudo apstress-arm  (eviltwin is on-demand: sudo eviltwin-run)"

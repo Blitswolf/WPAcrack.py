@@ -1,0 +1,9 @@
+#!/bin/bash
+echo "=== PIPELINE STATUS @ $(date '+%F %T') ==="
+for u in wpacrack-harvest apresearch wps-attack apstress eviltwin; do printf "  %-24s %s\n" "$u.service" "$(systemctl is-active $u.service 2>/dev/null)"; done
+for u in apvuln aprecon; do printf "  %-24s %s\n" "$u.timer" "$(systemctl is-active $u.timer 2>/dev/null)"; done
+echo "--- armed gates ---"; grep -iE '^[[:space:]]*(wps_enabled|eviltwin_enabled|stress_enabled)[[:space:]]*=' /opt/wpacrack/wpacrack.conf 2>/dev/null | sed 's/^/  /'
+echo "--- radio lock ---"; [ -e /opt/wpacrack/.radio.lock ] && echo "  present (a stage holds the radio)" || echo "  free"
+echo "--- wlan modes ---"; for IF in wlan1 wlan2; do [ -e /sys/class/net/$IF ] && echo "  $IF: $(iw dev $IF info 2>/dev/null | awk '/type/{print $2}')"; done
+echo "--- live attack procs ---"; pgrep -a -f 'mdk4|reaver|bully|aireplay-ng|hostapd' 2>/dev/null | sed 's/^/  /' || echo "  none"
+echo "--- published channels ---"; for f in /opt/wpacrack/channels/*; do [ -e "$f" ] && echo "  $(basename $f): $(cat $f 2>/dev/null)"; done 2>/dev/null

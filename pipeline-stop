@@ -1,0 +1,24 @@
+#!/bin/bash
+# CRASH STOP — immediately halt the whole RF pipeline and restore the box to a clean managed state.
+# Order: disarm gates -> kill live TX -> stop services -> restore interfaces/NM/netwatch -> free lock.
+set +e
+CONF=/opt/wpacrack/wpacrack.conf
+echo "[crash-stop] 1/5 disarming offensive gates (nothing re-arms on restart/reboot)"
+sed -i -E 's/^[[:space:]]*(wps_enabled|eviltwin_enabled|stress_enabled)[[:space:]]*=.*/\1 = false/I' "$CONF" 2>/dev/null
+echo "[crash-stop] 2/5 killing live attack/capture processes (instant TX halt)"
+pkill -9 -f 'mdk4|reaver|bully|aireplay-ng|airodump-ng|wash|hostapd' 2>/dev/null
+pkill -9 -f 'dnsmasq.*eviltwin' 2>/dev/null
+echo "[crash-stop] 3/5 stopping services"
+systemctl stop apstress.service wps-attack.service eviltwin.service aprecon.service \
+  apvuln.timer apvuln.service aprecon.timer apresearch.service \
+  wpacrack-harvest.service wpacrack.service 2>/dev/null
+echo "[crash-stop] 4/5 releasing radio lock + restoring interfaces to managed"
+rm -f /opt/wpacrack/.radio.lock
+for IF in wlan1 wlan2; do
+  [ -e /sys/class/net/$IF ] || continue
+  ip link set "$IF" down 2>/dev/null; iw dev "$IF" set type managed 2>/dev/null; ip link set "$IF" up 2>/dev/null
+done
+systemctl start NetworkManager 2>/dev/null
+echo "[crash-stop] 5/5 re-enabling netwatch (wlan1 self-heal)"
+[ -x /usr/local/bin/netwatch-ctl ] && /usr/local/bin/netwatch-ctl on 2>/dev/null
+echo "[crash-stop] DONE — pipeline halted; wps/eviltwin/stress DISARMED; box restored to managed."
